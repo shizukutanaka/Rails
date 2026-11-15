@@ -944,7 +944,7 @@ var RailsCore = (function () {
           if (st && st.s === STOP.STOP) h += '<circle cx="' + X(p.x).toFixed(1) + '" cy="' + Y(p.y) + '" r="2.4" fill="' + esc(color) + '"/>';
         });
         var first = seg[0];
-        h += '<text x="' + (X(first.x) + 3) + '" y="' + (Y(first.y) - 4) + '" font-size="10" fill="' + esc(color) + '">' + esc(train.number || '') + '</text>';
+        h += '<text x="' + (X(first.x) + 3) + '" y="' + (Y(first.y) - 4) + '" font-size="10" fill="' + esc(color) + '" paint-order="stroke" stroke="#ffffff" stroke-width="3" stroke-linejoin="round">' + esc(train.number || '') + '</text>';
       });
     });
     h += '</svg></div>';
