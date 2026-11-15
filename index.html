@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rails — 時刻表管理</title>
+<style>
+  :root { --accent:#0b5cad; --border:#c9ced6; --bg:#f4f6f9; --error:#c0392b; --warn:#b7791f; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif; color:#1c2430; background:var(--bg); }
+  header { background:#fff; border-bottom:1px solid var(--border); padding:10px 14px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  header h1 { font-size:19px; margin:0 10px 0 0; }
+  header h1 .sub { font-size:12px; color:#5a6572; font-weight:normal; margin-left:6px; }
+  .spacer { flex:1; }
+  button, select, input[type="text"], input[type="color"] { font:inherit; }
+  button { background:#fff; border:1px solid var(--border); border-radius:6px; padding:5px 10px; cursor:pointer; }
+  button:hover { border-color:var(--accent); color:var(--accent); }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger:hover { border-color:var(--error); color:var(--error); }
+  button.small { padding:2px 7px; font-size:12px; }
+  nav.tabs { display:flex; gap:4px; padding:8px 14px 0; flex-wrap:wrap; }
+  nav.tabs button { border-radius:8px 8px 0 0; border-bottom:none; padding:7px 14px; background:#e8ecf1; }
+  nav.tabs button.active { background:#fff; font-weight:bold; color:var(--accent); }
+  nav.tabs .badge { background:var(--error); color:#fff; border-radius:9px; font-size:11px; padding:0 6px; margin-left:5px; }
+  main { background:#fff; margin:0 14px 14px; border:1px solid var(--border); border-radius:0 8px 8px 8px; padding:14px; min-height:50vh; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; align-items:flex-start; }
+  .panel { border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:12px; }
+  .panel h3 { margin:0 0 8px; font-size:14px; }
+  .scroll-x { overflow-x:auto; }
+  table { border-collapse:collapse; }
+  th, td { border:1px solid var(--border); padding:3px 5px; font-size:13px; text-align:center; }
+  th { background:#eef1f5; }
+  td.station, th.station { text-align:left; white-space:nowrap; font-weight:bold; background:#fbfcfd; }
+  input.time { width:52px; text-align:center; padding:3px 2px; border:1px solid var(--border); border-radius:4px; }
+  input.time.invalid { border-color:var(--error); background:#fdf0ef; }
+  input.num { width:64px; padding:3px; border:1px solid var(--border); border-radius:4px; }
+  input.name { width:110px; padding:3px; border:1px solid var(--border); border-radius:4px; }
+  input.abbr { width:44px; padding:3px; border:1px solid var(--border); border-radius:4px; }
+  select.state { width:74px; }
+  .cell { display:flex; flex-direction:column; gap:2px; align-items:stretch; }
+  .cell .times { display:flex; gap:2px; }
+  .mini { font-size:11px; color:#5a6572; }
+  .legend { font-size:12px; color:#5a6572; margin-top:8px; }
+  .issues { list-style:none; margin:0; padding:0; }
+  .issues li { padding:6px 8px; border-left:4px solid var(--warn); background:#fdf8ec; margin-bottom:5px; font-size:13px; }
+  .issues li.error { border-left-color:var(--error); background:#fdf0ef; }
+  .ok { color:#1e7d32; font-weight:bold; }
+  .stt-hour { font-size:20px; font-weight:bold; width:52px; text-align:right; padding-right:10px; vertical-align:top; }
+  .stt-chips { display:flex; flex-wrap:wrap; gap:4px 10px; }
+  .chip { white-space:nowrap; font-size:14px; }
+  .chip .min { font-weight:bold; font-size:16px; }
+  .chip .dest { font-size:11px; color:#5a6572; }
+  .chip .tabbr { font-size:11px; font-weight:bold; }
+  .tt-sym { color:#5a6572; }
+  #diagramWrap { overflow:auto; border:1px solid var(--border); border-radius:8px; background:#fff; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  label.lbl { font-size:13px; color:#39424e; }
+  @media (max-width: 640px) {
+    main { margin:0 6px 8px; padding:8px; }
+    header h1 { font-size:16px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rails<span class="sub" data-i18n="appSub">日本の時刻表管理</span></h1>
+  <div class="spacer"></div>
+  <button id="btnSaveJson" data-i18n="saveJson">JSON保存</button>
+  <button id="btnLoadJson" data-i18n="loadJson">JSON読込</button>
+  <button id="btnExportOud" data-i18n="exportOud">OuDia書出</button>
+  <button id="btnImportOud" data-i18n="importOud">OuDia読込</button>
+  <button id="btnSample" data-i18n="sample">サンプル</button>
+  <button id="btnNew" data-i18n="newData">新規</button>
+  <button id="btnLang">EN</button>
+  <input type="file" id="fileJson" accept=".json,application/json" hidden>
+  <input type="file" id="fileOud" accept=".oud,.oud2,.txt" hidden>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-view="edit" class="active" data-i18n="viewEdit">編集</button>
+  <button data-view="train" data-i18n="viewTrain">列車時刻表</button>
+  <button data-view="station" data-i18n="viewStation">駅時刻表</button>
+  <button data-view="diagram" data-i18n="viewDiagram">ダイヤグラム</button>
+  <button data-view="check" data-i18n="viewCheck">検証</button>
+</nav>
+<main id="main"></main>
+
+<script>
+/* ==RAILS-CORE-BEGIN== */
+'use strict';
+var RailsCore = (function () {
+  var STOP = { NONE: 0, STOP: 1, PASS: 2, SKIP: 3 };
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  // 時刻文字列 -> 0:00 からの分 (24:00-27:59 は 1440-1679)。不正なら null。
+  // 0:00-2:59 は深夜として 24:00-26:59 に読み替える (1日の始まりは 3:00)。
+  function parseTime(str) {
+    if (str == null) return null;
+    str = String(str).trim().replace(/：/g, ':');
+    if (!str) return null;
+    var h, m, mm = str.match(/^(\d{1,2}):(\d{2})$/);
+    if (mm) { h = +mm[1]; m = +mm[2]; }
+    else if (/^\d{3,4}$/.test(str)) { m = +str.slice(-2); h = +str.slice(0, -2); }
+    else return null;
+    if (m > 59) return null;
+    if (h <= 2) h += 24;
+    if (h < 3 || h > 27) return null;
+    return h * 60 + m;
+  }
+
+  // 分 -> "H:MM" (H は 24-27 になりうる)
+  function formatTime(min) {
+    if (min == null) return '';
+    return Math.floor(min / 60) + ':' + pad2(min % 60);
+  }
+
+  // OuDia の HMM 表記
+  function formatOudTime(min) {
+    return String(Math.floor(min / 60)) + pad2(min % 60);
+  }
+  function parseOudTime(str) {
+    if (!str) return null;
+    str = String(str).trim();
+    if (!/^\d{3,4}$/.test(str)) return null;
+    var m = +str.slice(-2), h = +str.slice(0, -2);
+    if (m > 59) return null;
+    if (h <= 2) h += 24;
+    if (h > 27) return null;
+    return h * 60 + m;
+  }
+
+  function newStop() { return { s: STOP.NONE, arr: null, dep: null }; }
+
+  function newTrain(stationCount) {
+    var stops = [];
+    for (var i = 0; i < stationCount; i++) stops.push(newStop());
+    return { number: '', name: '', typeIndex: 0, direction: 'down', note: '', stops: stops };
+  }
+
+  function emptyData() {
+    return {
+      lineName: '',
+      stations: [{ name: '駅1' }, { name: '駅2' }],
+      types: [{ name: '普通', abbr: '普', color: '#000000' }],
+      diagrams: [{ name: '平日', trains: [] }]
+    };
+  }
+
+  // 運行順の駅インデックス列 (下り: 路線順 / 上り: 逆順)
+  function travelOrder(train, stationCount) {
+    var idx = [];
+    for (var i = 0; i < stationCount; i++) idx.push(i);
+    if (train.direction === 'up') idx.reverse();
+    return idx;
+  }
+
+  // 行先: 運行順で最後の停車/通過駅。無ければ時刻のある最後の駅、それも無ければ ''
+  function destination(data, train) {
+    var order = travelOrder(train, data.stations.length), i, st;
+    for (i = order.length - 1; i >= 0; i--) {
+      st = train.stops[order[i]];
+      if (st && (st.s === STOP.STOP || st.s === STOP.PASS)) return data.stations[order[i]].name;
+    }
+    for (i = order.length - 1; i >= 0; i--) {
+      st = train.stops[order[i]];
+      if (st && (st.arr != null || st.dep != null)) return data.stations[order[i]].name;
+    }
+    return '';
+  }
+
+  // 駅の挿入/削除/移動に全列車の stops を追随させる
+  function insertStation(data, index, name) {
+    data.stations.splice(index, 0, { name: name });
+    data.diagrams.forEach(function (dia) {
+      dia.trains.forEach(function (tr) { tr.stops.splice(index, 0, newStop()); });
+    });
+  }
+  function removeStation(data, index) {
+    data.stations.splice(index, 1);
+    data.diagrams.forEach(function (dia) {
+      dia.trains.forEach(function (tr) { tr.stops.splice(index, 1); });
+    });
+  }
+  function moveStation(data, from, to) {
+    var st = data.stations.splice(from, 1)[0];
+    data.stations.splice(to, 0, st);
+    data.diagrams.forEach(function (dia) {
+      dia.trains.forEach(function (tr) {
+        var s = tr.stops.splice(from, 1)[0];
+        tr.stops.splice(to, 0, s);
+      });
+    });
+  }
+
+  // 検証: 問題の配列を返す。各要素 {level:'error'|'warning', code, diagram, train, station}
+  function validate(data) {
+    var issues = [];
+    data.diagrams.forEach(function (dia) {
+      dia.trains.forEach(function (train) {
+        var n = data.stations.length;
+        var order = travelOrder(train, n);
+        var label = train.number || train.name || '(列車)';
+        function push(level, code, stationIdx) {
+          issues.push({
+            level: level, code: code, diagram: dia.name, train: label,
+            station: stationIdx != null ? data.stations[stationIdx].name : ''
+          });
+        }
+        // 時刻が入っている駅 (運行順) — 始発側/終着側の判定に使う
+        var timed = order.filter(function (idx) {
+          var st = train.stops[idx];
+          return st && (st.arr != null || st.dep != null);
+        });
+        var firstTimed = timed.length ? timed[0] : -1;
+        var lastTimed = timed.length ? timed[timed.length - 1] : -1;
+        var lastTime = null;
+        order.forEach(function (idx) {
+          var st = train.stops[idx];
+          if (!st) return;
+          if (st.s === STOP.STOP && st.arr == null && st.dep == null) push('warning', 'stop-no-time', idx);
+          if (st.s === STOP.NONE && (st.arr != null || st.dep != null)) push('warning', 'unset-with-time', idx);
+          if (st.s === STOP.SKIP && (st.arr != null || st.dep != null)) push('warning', 'skip-with-time', idx);
+          if (st.arr != null && st.dep != null && st.arr > st.dep) push('error', 'arr-after-dep', idx);
+          if (st.s === STOP.STOP && idx !== firstTimed && idx !== lastTimed) {
+            if (st.arr != null && st.dep == null) push('warning', 'arr-only', idx);
+            if (st.arr == null && st.dep != null) push('warning', 'dep-only', idx);
+          }
+          [st.arr, st.dep].forEach(function (t) {
+            if (t == null) return;
+            if (lastTime != null && t < lastTime) push('error', 'time-regression', idx);
+            if (lastTime == null || t > lastTime) lastTime = t;
+          });
+        });
+      });
+    });
+    return issues;
+  }
+
+  // 駅時刻表: 指定駅・方向の発車一覧 [{time, train, type, dest}] 時刻順
+  function stationDepartures(data, diagramIndex, stationIndex, direction) {
+    var dia = data.diagrams[diagramIndex];
+    if (!dia) return [];
+    var out = [];
+    dia.trains.forEach(function (train) {
+      if (train.direction !== direction) return;
+      var st = train.stops[stationIndex];
+      if (!st || st.s !== STOP.STOP || st.dep == null) return;
+      out.push({
+        time: st.dep, train: train,
+        type: data.types[train.typeIndex] || null,
+        dest: destination(data, train)
+      });
+    });
+    out.sort(function (a, b) { return a.time - b.time; });
+    return out;
+  }
+
+  // ダイヤグラム描画用: 運行順の線分列。各線分は [{x:時刻, y:駅index}, ...]
+  // 経由なしで線分を切り、時刻のない駅は点を打たない (線はつなぐ)。
+  function trainSegments(train, stationCount) {
+    var order = travelOrder(train, stationCount);
+    var segments = [], cur = null;
+    order.forEach(function (idx) {
+      var st = train.stops[idx];
+      if (!st || st.s === STOP.SKIP) { cur = null; return; }
+      var times = [];
+      if (st.arr != null) times.push(st.arr);
+      if (st.dep != null && st.dep !== st.arr) times.push(st.dep);
+      if (!times.length) return;
+      if (!cur) { cur = []; segments.push(cur); }
+      times.forEach(function (t) { cur.push({ x: t, y: idx }); });
+    });
+    return segments.filter(function (s) { return s.length >= 2; });
+  }
+
+  // ---- OuDia (.oud) ----
+
+  function colorToOud(hex) {
+    var m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+    if (!m) return '00000000';
+    var c = m[1].toUpperCase();
+    return '00' + c.slice(4, 6) + c.slice(2, 4) + c.slice(0, 2); // 00BBGGRR
+  }
+  function colorFromOud(v) {
+    var m = /^00([0-9a-f]{6})$/i.exec(v || '');
+    if (!m) return '#000000';
+    var c = m[1];
+    return ('#' + c.slice(4, 6) + c.slice(2, 4) + c.slice(0, 2)).toLowerCase();
+  }
+
+  function ekiJikokuOf(train, stationCount) {
+    var order = travelOrder(train, stationCount);
+    var parts = order.map(function (idx) {
+      var st = train.stops[idx] || newStop();
+      if (st.s === STOP.SKIP) return '3';
+      if (st.s === STOP.NONE && st.arr == null && st.dep == null) return '3';
+      if (st.s === STOP.PASS) {
+        var t = st.dep != null ? st.dep : st.arr;
+        return '2' + (t != null ? ';' + formatOudTime(t) : '');
+      }
+      // 停車 (時刻だけ入っている未設定も停車として書き出す)
+      if (st.arr != null && st.dep != null) return '1;' + formatOudTime(st.arr) + '/' + formatOudTime(st.dep);
+      if (st.arr != null) return '1;' + formatOudTime(st.arr) + '/';
+      if (st.dep != null) return '1;' + formatOudTime(st.dep);
+      return '1';
+    });
+    while (parts.length && parts[parts.length - 1] === '3') parts.pop();
+    return parts.join(',');
+  }
+
+  function parseEkiJikoku(str, stationCount, direction) {
+    var stops = [];
+    // 記載のない駅 (末尾省略) は経由なしとして読む
+    for (var i = 0; i < stationCount; i++) stops.push({ s: STOP.SKIP, arr: null, dep: null });
+    var order = travelOrder({ direction: direction }, stationCount);
+    var raw = (str == null ? '' : String(str)).split(',');
+    raw.forEach(function (part, k) {
+      if (k >= stationCount) return;
+      var idx = order[k];
+      part = part.split('$')[0].trim();
+      if (!part) { stops[idx] = { s: STOP.SKIP, arr: null, dep: null }; return; }
+      var semi = part.split(';');
+      var st = newStop();
+      if (semi[0] === '1') st.s = STOP.STOP;
+      else if (semi[0] === '2') st.s = STOP.PASS;
+      else st.s = STOP.SKIP; // '3' (経由なし) / '0' (OuDiaSecond の運行なし)
+      if (semi.length > 1 && semi[1] !== '') {
+        var ts = semi[1];
+        if (ts.indexOf('/') >= 0) {
+          var ab = ts.split('/');
+          st.arr = parseOudTime(ab[0]);
+          st.dep = parseOudTime(ab[1]);
+        } else {
+          st.dep = parseOudTime(ts);
+        }
+      }
+      stops[idx] = st;
+    });
+    return stops;
+  }
+
+  function toOudia(data) {
+    var lines = [];
+    lines.push('FileType=OuDia.1.02');
+    lines.push('Rosen.');
+    lines.push('Rosenmei=' + data.lineName);
+    lines.push('KitenJikoku=300');
+    data.stations.forEach(function (st) {
+      lines.push('Eki.');
+      lines.push('Ekimei=' + st.name);
+      lines.push('Ekijikokukeisiki=Jikokukeisiki_Hatsuchaku');
+      lines.push('Ekikibo=Ekikibo_Ippan');
+      lines.push('.');
+    });
+    data.types.forEach(function (ty) {
+      lines.push('Ressyasyubetsu.');
+      lines.push('Syubetsumei=' + ty.name);
+      lines.push('Ryakusyou=' + (ty.abbr || ''));
+      lines.push('JikokuhyouMojiColor=' + colorToOud(ty.color));
+      lines.push('JikokuhyouFontIndex=0');
+      lines.push('DiagramSenColor=' + colorToOud(ty.color));
+      lines.push('DiagramSenStyle=SenStyle_Jissen');
+      lines.push('StopMarkDrawType=EStopMarkDrawType_DrawOnStop');
+      lines.push('.');
+    });
+    data.diagrams.forEach(function (dia) {
+      lines.push('Dia.');
+      lines.push('DiaName=' + dia.name);
+      [['Kudari', 'down', 'Kudari'], ['Nobori', 'up', 'Nobori']].forEach(function (grp) {
+        lines.push(grp[0] + '.');
+        dia.trains.forEach(function (train) {
+          if (train.direction !== grp[1]) return;
+          lines.push('Ressya.');
+          lines.push('Houkou=' + grp[2]);
+          lines.push('Syubetsu=' + train.typeIndex);
+          lines.push('Ressyabangou=' + (train.number || ''));
+          if (train.name) lines.push('Ressyamei=' + train.name);
+          lines.push('EkiJikoku=' + ekiJikokuOf(train, data.stations.length));
+          if (train.note) lines.push('Bikou=' + train.note);
+          lines.push('.');
+        });
+        lines.push('.');
+      });
+      lines.push('.');
+    });
+    lines.push('.');
+    lines.push('FileTypeAppComment=Rails');
+    return lines.join('\r\n') + '\r\n';
+  }
+
+  // OuDia テキストを木構造に分解する: {name, props:{}, children:[]}
+  function parseOudTree(text) {
+    var root = { name: '', props: {}, children: [] };
+    var stack = [root];
+    String(text).split(/\r?\n/).forEach(function (rawLine) {
+      var line = rawLine.trim();
+      if (!line) return;
+      if (line === '.') { if (stack.length > 1) stack.pop(); return; }
+      if (line.charAt(line.length - 1) === '.' && line.indexOf('=') < 0) {
+        var node = { name: line.slice(0, -1), props: {}, children: [] };
+        stack[stack.length - 1].children.push(node);
+        stack.push(node);
+        return;
+      }
+      var eq = line.indexOf('=');
+      if (eq >= 0) stack[stack.length - 1].props[line.slice(0, eq)] = line.slice(eq + 1);
+    });
+    return root;
+  }
+  function childNodes(node, name) {
+    return node.children.filter(function (c) { return c.name === name; });
+  }
+  function firstChild(node, name) {
+    var c = childNodes(node, name);
+    return c.length ? c[0] : null;
+  }
+
+  function fromOudia(text) {
+    var root = parseOudTree(text);
+    var rosen = firstChild(root, 'Rosen');
+    if (!rosen) throw new Error('Rosen not found');
+    var data = emptyData();
+    data.lineName = rosen.props.Rosenmei || '';
+    data.stations = childNodes(rosen, 'Eki').map(function (e) {
+      return { name: e.props.Ekimei || '' };
+    });
+    if (!data.stations.length) throw new Error('Eki not found');
+    data.types = childNodes(rosen, 'Ressyasyubetsu').map(function (t) {
+      return {
+        name: t.props.Syubetsumei || '',
+        abbr: t.props.Ryakusyou || '',
+        color: colorFromOud(t.props.DiagramSenColor || t.props.JikokuhyouMojiColor || '')
+      };
+    });
+    if (!data.types.length) data.types = emptyData().types;
+    var n = data.stations.length;
+    data.diagrams = childNodes(rosen, 'Dia').map(function (d) {
+      var trains = [];
+      [['Kudari', 'down'], ['Nobori', 'up']].forEach(function (grp) {
+        var holder = firstChild(d, grp[0]);
+        if (!holder) return;
+        childNodes(holder, 'Ressya').forEach(function (r) {
+          var train = newTrain(n);
+          train.direction = grp[1];
+          train.number = r.props.Ressyabangou || '';
+          train.name = r.props.Ressyamei || '';
+          train.note = r.props.Bikou || '';
+          var ti = parseInt(r.props.Syubetsu, 10);
+          train.typeIndex = isNaN(ti) || ti < 0 || ti >= data.types.length ? 0 : ti;
+          train.stops = parseEkiJikoku(r.props.EkiJikoku, n, grp[1]);
+          trains.push(train);
+        });
+      });
+      return { name: d.props.DiaName || 'ダイヤ', trains: trains };
+    });
+    if (!data.diagrams.length) data.diagrams = [{ name: '平日', trains: [] }];
+    return data;
+  }
+
+  // ---- JSON ----
+  function exportJSON(data) {
+    return JSON.stringify(data, null, 2);
+  }
+  function importJSON(text) {
+    var data = JSON.parse(text);
+    if (!data || !Array.isArray(data.stations) || !Array.isArray(data.types) || !Array.isArray(data.diagrams)) {
+      throw new Error('invalid timetable JSON');
+    }
+    data.lineName = data.lineName || '';
+    data.diagrams.forEach(function (dia) {
+      dia.trains = dia.trains || [];
+      dia.trains.forEach(function (tr) {
+        while (tr.stops.length < data.stations.length) tr.stops.push(newStop());
+        tr.stops.length = data.stations.length;
+      });
+    });
+    return data;
+  }
+
+  // ---- サンプルデータ (架空の青葉線) ----
+  function sampleData() {
+    function S(s, arr, dep) { return { s: s, arr: arr, dep: dep }; }
+    function T(number, typeIndex, direction, stops) {
+      return { number: number, name: '', typeIndex: typeIndex, direction: direction, note: '', stops: stops };
+    }
+    var ST = STOP.STOP, PS = STOP.PASS;
+    return {
+      lineName: '青葉線',
+      stations: ['青葉', '新町', '川向', '高原', '港', '浜辺'].map(function (name) { return { name: name }; }),
+      types: [
+        { name: '普通', abbr: '普', color: '#000000' },
+        { name: '快速', abbr: '快', color: '#e60012' },
+        { name: '特急', abbr: '特', color: '#1e50a2' }
+      ],
+      diagrams: [
+        {
+          name: '平日', trains: [
+            T('101', 0, 'down', [S(ST, null, 360), S(ST, 364, 365), S(ST, 369, 370), S(ST, 375, 376), S(ST, 381, 382), S(ST, 387, null)]),
+            T('201', 1, 'down', [S(ST, null, 370), S(PS, null, 374), S(ST, 378, 379), S(PS, null, 383), S(ST, 387, 388), S(ST, 393, null)]),
+            T('1', 2, 'down', [S(ST, null, 390), S(PS, null, 395), S(PS, null, 398), S(ST, 402, 403), S(PS, null, 408), S(ST, 412, null)]),
+            T('103', 0, 'down', [S(ST, null, 380), S(ST, 384, 385), S(ST, 389, 390), S(ST, 395, 396), S(ST, 401, 402), S(ST, 407, null)]),
+            T('191', 0, 'down', [S(ST, null, 1438), S(ST, 1443, 1444), S(ST, 1448, 1449), S(ST, 1454, 1455), S(ST, 1460, 1461), S(ST, 1466, null)]),
+            T('102', 0, 'up', [S(ST, 393, null), S(ST, 387, 388), S(ST, 382, 383), S(ST, 376, 377), S(ST, 370, 371), S(ST, null, 365)]),
+            T('202', 1, 'up', [S(ST, 398, null), S(PS, null, 394), S(ST, 389, 390), S(PS, null, 385), S(ST, 380, 381), S(ST, null, 375)]),
+            T('2', 2, 'up', [S(ST, 422, null), S(PS, null, 420), S(PS, null, 416), S(ST, 410, 411), S(PS, null, 405), S(ST, null, 400)])
+          ]
+        },
+        {
+          name: '土休日', trains: [
+            T('101', 0, 'down', [S(ST, null, 420), S(ST, 424, 425), S(ST, 429, 430), S(ST, 435, 436), S(ST, 441, 442), S(ST, 447, null)]),
+            T('201', 1, 'down', [S(ST, null, 450), S(PS, null, 454), S(ST, 458, 459), S(PS, null, 463), S(ST, 467, 468), S(ST, 473, null)]),
+            T('102', 0, 'up', [S(ST, 453, null), S(ST, 447, 448), S(ST, 442, 443), S(ST, 436, 437), S(ST, 430, 431), S(ST, null, 425)])
+          ]
+        }
+      ]
+    };
+  }
+
+  return {
+    STOP: STOP,
+    parseTime: parseTime, formatTime: formatTime,
+    formatOudTime: formatOudTime, parseOudTime: parseOudTime,
+    newStop: newStop, newTrain: newTrain, emptyData: emptyData,
+    travelOrder: travelOrder, destination: destination,
+    insertStation: insertStation, removeStation: removeStation, moveStation: moveStation,
+    validate: validate, stationDepartures: stationDepartures, trainSegments: trainSegments,
+    colorToOud: colorToOud, colorFromOud: colorFromOud,
+    toOudia: toOudia, fromOudia: fromOudia,
+    exportJSON: exportJSON, importJSON: importJSON,
+    sampleData: sampleData
+  };
+})();
+/* ==RAILS-CORE-END== */
+</script>
+
+<script>
+(function () {
+  'use strict';
+  var C = RailsCore, STOP = C.STOP;
+  var LS_KEY = 'rails.timetable.v1';
+
+  var I18N = {
+    ja: {
+      appSub: '日本の時刻表管理', saveJson: 'JSON保存', loadJson: 'JSON読込',
+      exportOud: 'OuDia書出', importOud: 'OuDia読込', sample: 'サンプル', newData: '新規',
+      viewEdit: '編集', viewTrain: '列車時刻表', viewStation: '駅時刻表', viewDiagram: 'ダイヤグラム', viewCheck: '検証',
+      lineName: '路線名', stations: '駅', trainTypes: '列車種別', diagram: 'ダイヤ',
+      addStation: '駅を追加', addType: '種別を追加', addTrainDown: '下り列車を追加', addTrainUp: '上り列車を追加',
+      addDiagram: 'ダイヤを追加', deleteDiagram: 'ダイヤを削除',
+      name: '名前', abbr: '略称', color: '色', number: '列車番号', type: '種別', direction: '方向',
+      down: '下り', up: '上り', station: '駅', arrival: '着', departure: '発',
+      stNone: '未設定', stStop: '停車', stPass: '通過', stSkip: '経由なし',
+      legend: '凡例: 停車=時刻 / 通過=レ / 経由なし=‥ / 未設定=―。時刻は 3:00 始まり、深夜は 24:00〜27:59 で表します。',
+      selectTrain: '列車', selectStation: '駅', dest: '行先',
+      noIssues: '問題はありません。', issuesFound: '件の問題',
+      confirmNew: '現在のデータを破棄して新規データにしますか？', confirmSample: '現在のデータを破棄してサンプルに戻しますか？',
+      confirmDelete: '削除しますか？', loadFailed: '読み込みに失敗しました: ',
+      hour: '時'
+    },
+    en: {
+      appSub: 'Japanese timetable manager', saveJson: 'Save JSON', loadJson: 'Load JSON',
+      exportOud: 'Export OuDia', importOud: 'Import OuDia', sample: 'Sample', newData: 'New',
+      viewEdit: 'Edit', viewTrain: 'Train timetable', viewStation: 'Station timetable', viewDiagram: 'Diagram', viewCheck: 'Check',
+      lineName: 'Line name', stations: 'Stations', trainTypes: 'Train types', diagram: 'Diagram (service day)',
+      addStation: 'Add station', addType: 'Add type', addTrainDown: 'Add down train', addTrainUp: 'Add up train',
+      addDiagram: 'Add diagram', deleteDiagram: 'Delete diagram',
+      name: 'Name', abbr: 'Abbr.', color: 'Color', number: 'Train no.', type: 'Type', direction: 'Direction',
+      down: 'Down', up: 'Up', station: 'Station', arrival: 'Arr.', departure: 'Dep.',
+      stNone: 'Unset', stStop: 'Stop', stPass: 'Pass', stSkip: 'Not routed',
+      legend: 'Legend: stop = time / pass = レ / not routed = ‥ / unset = ―. The day starts at 3:00; late night is written 24:00-27:59.',
+      selectTrain: 'Train', selectStation: 'Station', dest: 'Destination',
+      noIssues: 'No issues found.', issuesFound: ' issue(s)',
+      confirmNew: 'Discard current data and start new?', confirmSample: 'Discard current data and restore the sample?',
+      confirmDelete: 'Delete?', loadFailed: 'Failed to load: ',
+      hour: ':00'
+    }
+  };
+  var ISSUE_TEXT = {
+    ja: {
+      'arr-after-dep': '着時刻が発時刻より後になっています',
+      'time-regression': '時刻が前より戻っています',
+      'stop-no-time': '停車なのに時刻が未入力です',
+      'unset-with-time': '時刻が入っていますが状態が未設定です',
+      'skip-with-time': '経由なしなのに時刻が入っています',
+      'arr-only': '途中駅で着時刻のみです (発時刻がありません)',
+      'dep-only': '途中駅で発時刻のみです (着時刻がありません)'
+    },
+    en: {
+      'arr-after-dep': 'Arrival is after departure',
+      'time-regression': 'Time goes backwards',
+      'stop-no-time': 'Stop with no time entered',
+      'unset-with-time': 'Time entered but state is unset',
+      'skip-with-time': 'Time entered at a not-routed station',
+      'arr-only': 'Arrival only at an intermediate station (no departure)',
+      'dep-only': 'Departure only at an intermediate station (no arrival)'
+    }
+  };
+
+  var lang = localStorage.getItem(LS_KEY + '.lang') || 'ja';
+  var data, curDia = 0, view = 'edit';
+  var selTrain = 0, selStation = 0, selDirection = 'down';
+  try {
+    var saved = localStorage.getItem(LS_KEY);
+    data = saved ? C.importJSON(saved) : C.sampleData();
+  } catch (e) { data = C.sampleData(); }
+
+  function t(k) { return (I18N[lang] && I18N[lang][k]) || I18N.ja[k] || k; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch (e) {} }
+  function dia() { return data.diagrams[curDia] || data.diagrams[0]; }
+
+  var main = document.getElementById('main');
+
+  function applyI18n() {
+    document.documentElement.lang = lang;
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.getElementById('btnLang').textContent = lang === 'ja' ? 'EN' : '日本語';
+    var issues = C.validate(data);
+    var checkBtn = document.querySelector('#tabs button[data-view="check"]');
+    checkBtn.innerHTML = esc(t('viewCheck')) + (issues.length ? '<span class="badge">' + issues.length + '</span>' : '');
+  }
+
+  function render() {
+    applyI18n();
+    document.querySelectorAll('#tabs button').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-view') === view);
+    });
+    if (view === 'edit') renderEdit();
+    else if (view === 'train') renderTrainView();
+    else if (view === 'station') renderStationView();
+    else if (view === 'diagram') renderDiagramView();
+    else renderCheckView();
+  }
+
+  function diaSelectHtml(id) {
+    var h = '<select id="' + id + '">';
+    data.diagrams.forEach(function (d, i) {
+      h += '<option value="' + i + '"' + (i === curDia ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+    });
+    return h + '</select>';
+  }
+
+  // ---------- 編集 ----------
+  function renderEdit() {
+    var d = dia();
+    var h = '';
+    h += '<div class="toolbar"><label class="lbl">' + t('lineName') + '</label>' +
+      '<input type="text" class="name" id="lineName" value="' + esc(data.lineName) + '">' +
+      '<label class="lbl">' + t('diagram') + '</label>' + diaSelectHtml('diaSel') +
+      '<input type="text" class="name" id="diaName" value="' + esc(d.name) + '">' +
+      '<button class="small" id="btnAddDia">' + t('addDiagram') + '</button>' +
+      '<button class="small danger" id="btnDelDia">' + t('deleteDiagram') + '</button></div>';
+
+    h += '<div class="row"><div style="flex:1;min-width:260px">';
+    // 駅
+    h += '<div class="panel"><h3>' + t('stations') + '</h3>';
+    data.stations.forEach(function (st, i) {
+      h += '<div class="toolbar" style="margin-bottom:4px">' +
+        '<input type="text" class="name st-name" data-i="' + i + '" value="' + esc(st.name) + '">' +
+        '<button class="small st-up" data-i="' + i + '">↑</button>' +
+        '<button class="small st-down" data-i="' + i + '">↓</button>' +
+        '<button class="small danger st-del" data-i="' + i + '">✕</button></div>';
+    });
+    h += '<button class="small" id="btnAddStation">' + t('addStation') + '</button></div>';
+    // 種別
+    h += '<div class="panel"><h3>' + t('trainTypes') + '</h3>';
+    data.types.forEach(function (ty, i) {
+      h += '<div class="toolbar" style="margin-bottom:4px">' +
+        '<input type="text" class="name ty-name" data-i="' + i + '" value="' + esc(ty.name) + '" placeholder="' + t('name') + '">' +
+        '<input type="text" class="abbr ty-abbr" data-i="' + i + '" value="' + esc(ty.abbr) + '" placeholder="' + t('abbr') + '">' +
+        '<input type="color" class="ty-color" data-i="' + i + '" value="' + esc(ty.color || '#000000') + '">' +
+        '<button class="small danger ty-del" data-i="' + i + '">✕</button></div>';
+    });
+    h += '<button class="small" id="btnAddType">' + t('addType') + '</button></div>';
+    h += '</div>';
+
+    // 列車グリッド
+    h += '<div style="flex:3;min-width:320px"><div class="toolbar">' +
+      '<button class="small" id="btnAddTrainDown">' + t('addTrainDown') + '</button>' +
+      '<button class="small" id="btnAddTrainUp">' + t('addTrainUp') + '</button></div>';
+    h += '<div class="scroll-x"><table><thead><tr><th class="station">' + t('station') + '</th>';
+    d.trains.forEach(function (train, ti) {
+      var ty = data.types[train.typeIndex] || {};
+      h += '<th><div class="cell">' +
+        '<input type="text" class="num tr-number" data-t="' + ti + '" value="' + esc(train.number) + '" placeholder="' + t('number') + '">' +
+        '<select class="tr-type" data-t="' + ti + '">' +
+        data.types.map(function (x, xi) {
+          return '<option value="' + xi + '"' + (xi === train.typeIndex ? ' selected' : '') + '>' + esc(x.name) + '</option>';
+        }).join('') + '</select>' +
+        '<select class="tr-dir" data-t="' + ti + '">' +
+        '<option value="down"' + (train.direction === 'down' ? ' selected' : '') + '>' + t('down') + '</option>' +
+        '<option value="up"' + (train.direction === 'up' ? ' selected' : '') + '>' + t('up') + '</option></select>' +
+        '<input type="text" class="num tr-name" data-t="' + ti + '" value="' + esc(train.name) + '" placeholder="' + t('name') + '">' +
+        '<button class="small danger tr-del" data-t="' + ti + '">✕</button>' +
+        '</div></th>';
+    });
+    h += '</tr></thead><tbody>';
+    data.stations.forEach(function (st, si) {
+      h += '<tr><td class="station">' + esc(st.name) + '</td>';
+      d.trains.forEach(function (train, ti) {
+        var stop = train.stops[si] || { s: 0, arr: null, dep: null };
+        h += '<td><div class="cell">' +
+          '<select class="state cell-state" data-t="' + ti + '" data-s="' + si + '">' +
+          [[0, 'stNone'], [1, 'stStop'], [2, 'stPass'], [3, 'stSkip']].map(function (o) {
+            return '<option value="' + o[0] + '"' + (stop.s === o[0] ? ' selected' : '') + '>' + t(o[1]) + '</option>';
+          }).join('') + '</select>' +
+          '<div class="times">' +
+          '<input type="text" class="time cell-arr" data-t="' + ti + '" data-s="' + si + '" value="' + (stop.arr != null ? C.formatTime(stop.arr) : '') + '" placeholder="' + t('arrival') + '">' +
+          '<input type="text" class="time cell-dep" data-t="' + ti + '" data-s="' + si + '" value="' + (stop.dep != null ? C.formatTime(stop.dep) : '') + '" placeholder="' + t('departure') + '">' +
+          '</div></div></td>';
+      });
+      h += '</tr>';
+    });
+    h += '</tbody></table></div><div class="legend">' + t('legend') + '</div></div></div>';
+    main.innerHTML = h;
+    bindEdit();
+  }
+
+  function bindEdit() {
+    var d = dia();
+    document.getElementById('lineName').addEventListener('change', function (e) { data.lineName = e.target.value; save(); });
+    document.getElementById('diaSel').addEventListener('change', function (e) { curDia = +e.target.value; render(); });
+    document.getElementById('diaName').addEventListener('change', function (e) { d.name = e.target.value; save(); render(); });
+    document.getElementById('btnAddDia').addEventListener('click', function () {
+      data.diagrams.push({ name: t('diagram') + (data.diagrams.length + 1), trains: [] });
+      curDia = data.diagrams.length - 1; save(); render();
+    });
+    document.getElementById('btnDelDia').addEventListener('click', function () {
+      if (data.diagrams.length <= 1 || !confirm(t('confirmDelete'))) return;
+      data.diagrams.splice(curDia, 1); curDia = 0; save(); render();
+    });
+    document.getElementById('btnAddStation').addEventListener('click', function () {
+      C.insertStation(data, data.stations.length, t('station') + (data.stations.length + 1));
+      save(); render();
+    });
+    main.querySelectorAll('.st-name').forEach(function (el) {
+      el.addEventListener('change', function () { data.stations[+el.dataset.i].name = el.value; save(); });
+    });
+    main.querySelectorAll('.st-del').forEach(function (el) {
+      el.addEventListener('click', function () {
+        if (data.stations.length <= 2 || !confirm(t('confirmDelete'))) return;
+        C.removeStation(data, +el.dataset.i); save(); render();
+      });
+    });
+    main.querySelectorAll('.st-up').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var i = +el.dataset.i; if (i > 0) { C.moveStation(data, i, i - 1); save(); render(); }
+      });
+    });
+    main.querySelectorAll('.st-down').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var i = +el.dataset.i; if (i < data.stations.length - 1) { C.moveStation(data, i, i + 1); save(); render(); }
+      });
+    });
+    document.getElementById('btnAddType').addEventListener('click', function () {
+      data.types.push({ name: t('type') + (data.types.length + 1), abbr: '', color: '#3366cc' });
+      save(); render();
+    });
+    main.querySelectorAll('.ty-name').forEach(function (el) {
+      el.addEventListener('change', function () { data.types[+el.dataset.i].name = el.value; save(); });
+    });
+    main.querySelectorAll('.ty-abbr').forEach(function (el) {
+      el.addEventListener('change', function () { data.types[+el.dataset.i].abbr = el.value; save(); });
+    });
+    main.querySelectorAll('.ty-color').forEach(function (el) {
+      el.addEventListener('change', function () { data.types[+el.dataset.i].color = el.value; save(); });
+    });
+    main.querySelectorAll('.ty-del').forEach(function (el) {
+      el.addEventListener('click', function () {
+        if (data.types.length <= 1 || !confirm(t('confirmDelete'))) return;
+        var i = +el.dataset.i;
+        data.types.splice(i, 1);
+        data.diagrams.forEach(function (dd) {
+          dd.trains.forEach(function (tr) {
+            if (tr.typeIndex === i) tr.typeIndex = 0;
+            else if (tr.typeIndex > i) tr.typeIndex--;
+          });
+        });
+        save(); render();
+      });
+    });
+    function addTrain(dir) {
+      var tr = C.newTrain(data.stations.length);
+      tr.direction = dir;
+      d.trains.push(tr); save(); render();
+    }
+    document.getElementById('btnAddTrainDown').addEventListener('click', function () { addTrain('down'); });
+    document.getElementById('btnAddTrainUp').addEventListener('click', function () { addTrain('up'); });
+    main.querySelectorAll('.tr-number').forEach(function (el) {
+      el.addEventListener('change', function () { d.trains[+el.dataset.t].number = el.value; save(); });
+    });
+    main.querySelectorAll('.tr-name').forEach(function (el) {
+      el.addEventListener('change', function () { d.trains[+el.dataset.t].name = el.value; save(); });
+    });
+    main.querySelectorAll('.tr-type').forEach(function (el) {
+      el.addEventListener('change', function () { d.trains[+el.dataset.t].typeIndex = +el.value; save(); });
+    });
+    main.querySelectorAll('.tr-dir').forEach(function (el) {
+      el.addEventListener('change', function () { d.trains[+el.dataset.t].direction = el.value; save(); });
+    });
+    main.querySelectorAll('.tr-del').forEach(function (el) {
+      el.addEventListener('click', function () {
+        if (!confirm(t('confirmDelete'))) return;
+        d.trains.splice(+el.dataset.t, 1); save(); render();
+      });
+    });
+    main.querySelectorAll('.cell-state').forEach(function (el) {
+      el.addEventListener('change', function () {
+        d.trains[+el.dataset.t].stops[+el.dataset.s].s = +el.value; save(); applyI18n();
+      });
+    });
+    function bindTime(cls, key) {
+      main.querySelectorAll(cls).forEach(function (el) {
+        el.addEventListener('change', function () {
+          var stop = d.trains[+el.dataset.t].stops[+el.dataset.s];
+          var v = el.value.trim();
+          if (!v) { stop[key] = null; el.classList.remove('invalid'); }
+          else {
+            var parsed = C.parseTime(v);
+            if (parsed == null) { el.classList.add('invalid'); return; }
+            stop[key] = parsed;
+            el.value = C.formatTime(parsed);
+            el.classList.remove('invalid');
+            if (stop.s === STOP.NONE) stop.s = STOP.STOP;
+          }
+          save(); applyI18n();
+        });
+      });
+    }
+    bindTime('.cell-arr', 'arr');
+    bindTime('.cell-dep', 'dep');
+  }
+
+  // ---------- 列車時刻表 ----------
+  function renderTrainView() {
+    var d = dia();
+    if (selTrain >= d.trains.length) selTrain = 0;
+    var h = '<div class="toolbar"><label class="lbl">' + t('diagram') + '</label>' + diaSelectHtml('diaSel2') +
+      '<label class="lbl">' + t('selectTrain') + '</label><select id="trainSel">';
+    d.trains.forEach(function (train, i) {
+      var ty = data.types[train.typeIndex] || {};
+      h += '<option value="' + i + '"' + (i === selTrain ? ' selected' : '') + '>' +
+        esc((train.number || '') + ' ' + (ty.name || '') + ' (' + t(train.direction) + ') ' + (train.name || '')) + '</option>';
+    });
+    h += '</select></div>';
+    var train = d.trains[selTrain];
+    if (train) {
+      var ty = data.types[train.typeIndex] || {};
+      h += '<h3 style="margin:4px 0">' + esc(train.number || '') + ' ' + esc(train.name || '') +
+        ' <span style="color:' + esc(ty.color || '#000') + '">' + esc(ty.name || '') + '</span>' +
+        ' <span class="mini">' + t(train.direction) + ' / ' + t('dest') + ': ' + esc(C.destination(data, train)) + '</span></h3>';
+      h += '<table><thead><tr><th class="station">' + t('station') + '</th><th>' + t('arrival') + '</th><th>' + t('departure') + '</th></tr></thead><tbody>';
+      C.travelOrder(train, data.stations.length).forEach(function (si) {
+        var st = train.stops[si] || { s: 0, arr: null, dep: null };
+        var a, b;
+        if (st.s === STOP.PASS) { a = b = '<span class="tt-sym">レ</span>'; }
+        else if (st.s === STOP.SKIP) { a = b = '<span class="tt-sym">‥</span>'; }
+        else if (st.s === STOP.NONE) { a = b = '<span class="tt-sym">―</span>'; }
+        else {
+          a = st.arr != null ? C.formatTime(st.arr) : '<span class="tt-sym">―</span>';
+          b = st.dep != null ? C.formatTime(st.dep) : '<span class="tt-sym">―</span>';
+        }
+        h += '<tr><td class="station">' + esc(data.stations[si].name) + '</td><td>' + a + '</td><td>' + b + '</td></tr>';
+      });
+      h += '</tbody></table>';
+    }
+    h += '<div class="legend">' + t('legend') + '</div>';
+    main.innerHTML = h;
+    document.getElementById('diaSel2').addEventListener('change', function (e) { curDia = +e.target.value; selTrain = 0; render(); });
+    var ts = document.getElementById('trainSel');
+    if (ts) ts.addEventListener('change', function (e) { selTrain = +e.target.value; render(); });
+  }
+
+  // ---------- 駅時刻表 ----------
+  function renderStationView() {
+    var h = '<div class="toolbar"><label class="lbl">' + t('diagram') + '</label>' + diaSelectHtml('diaSel3') +
+      '<label class="lbl">' + t('selectStation') + '</label><select id="stSel">';
+    data.stations.forEach(function (st, i) {
+      h += '<option value="' + i + '"' + (i === selStation ? ' selected' : '') + '>' + esc(st.name) + '</option>';
+    });
+    h += '</select><label class="lbl">' + t('direction') + '</label><select id="dirSel">' +
+      '<option value="down"' + (selDirection === 'down' ? ' selected' : '') + '>' + t('down') + '</option>' +
+      '<option value="up"' + (selDirection === 'up' ? ' selected' : '') + '>' + t('up') + '</option></select></div>';
+    var deps = C.stationDepartures(data, curDia, selStation, selDirection);
+    var byHour = {};
+    deps.forEach(function (dep) {
+      var hr = Math.floor(dep.time / 60);
+      (byHour[hr] = byHour[hr] || []).push(dep);
+    });
+    h += '<table>';
+    Object.keys(byHour).map(Number).sort(function (a, b) { return a - b; }).forEach(function (hr) {
+      h += '<tr><td class="stt-hour">' + hr + '</td><td><div class="stt-chips">';
+      byHour[hr].forEach(function (dep) {
+        var color = dep.type ? dep.type.color : '#000';
+        var abbr = dep.type ? (dep.type.abbr || dep.type.name) : '';
+        var minStr = (dep.time % 60 < 10 ? '0' : '') + (dep.time % 60);
+        h += '<span class="chip"><span class="min">' + minStr + '</span> ' +
+          '<span class="tabbr" style="color:' + esc(color) + '">' + esc(abbr) + '</span> ' +
+          '<span class="dest">' + esc(dep.dest) + '</span></span>';
+      });
+      h += '</div></td></tr>';
+    });
+    h += '</table>';
+    if (!deps.length) h += '<p class="mini">―</p>';
+    main.innerHTML = h;
+    document.getElementById('diaSel3').addEventListener('change', function (e) { curDia = +e.target.value; render(); });
+    document.getElementById('stSel').addEventListener('change', function (e) { selStation = +e.target.value; render(); });
+    document.getElementById('dirSel').addEventListener('change', function (e) { selDirection = e.target.value; render(); });
+  }
+
+  // ---------- ダイヤグラム ----------
+  function renderDiagramView() {
+    var d = dia();
+    var start = 180, end = 27 * 60; // 3:00 - 27:00
+    var left = 64, top = 28, pxPerMin = 1.1, rowH = 52;
+    var W = left + (end - start) * pxPerMin + 16;
+    var H = top + (data.stations.length - 1) * rowH + 34;
+    function X(time) { return left + (time - start) * pxPerMin; }
+    function Y(si) { return top + si * rowH; }
+    var h = '<div class="toolbar"><label class="lbl">' + t('diagram') + '</label>' + diaSelectHtml('diaSel4') + '</div>';
+    h += '<div id="diagramWrap"><svg width="' + W + '" height="' + H + '" xmlns="http://www.w3.org/2000/svg">';
+    for (var time = start; time <= end; time += 60) {
+      h += '<line x1="' + X(time) + '" y1="' + (top - 8) + '" x2="' + X(time) + '" y2="' + (H - 24) + '" stroke="#e3e7ee" stroke-width="1"/>' +
+        '<text x="' + X(time) + '" y="' + (top - 12) + '" font-size="11" text-anchor="middle" fill="#5a6572">' + (time / 60) + ':00</text>';
+    }
+    data.stations.forEach(function (st, si) {
+      h += '<line x1="' + left + '" y1="' + Y(si) + '" x2="' + (W - 16) + '" y2="' + Y(si) + '" stroke="#c9ced6" stroke-width="1"/>' +
+        '<text x="' + (left - 6) + '" y="' + (Y(si) + 4) + '" font-size="12" text-anchor="end">' + esc(st.name) + '</text>';
+    });
+    d.trains.forEach(function (train) {
+      var ty = data.types[train.typeIndex] || {};
+      var color = ty.color || '#000';
+      C.trainSegments(train, data.stations.length).forEach(function (seg) {
+        var pts = seg.map(function (p) { return X(p.x).toFixed(1) + ',' + Y(p.y); }).join(' ');
+        h += '<polyline points="' + pts + '" fill="none" stroke="' + esc(color) + '" stroke-width="1.6"/>';
+        seg.forEach(function (p) {
+          var st = train.stops[p.y];
+          if (st && st.s === STOP.STOP) h += '<circle cx="' + X(p.x).toFixed(1) + '" cy="' + Y(p.y) + '" r="2.4" fill="' + esc(color) + '"/>';
+        });
+        var first = seg[0];
+        h += '<text x="' + (X(first.x) + 3) + '" y="' + (Y(first.y) - 4) + '" font-size="10" fill="' + esc(color) + '" paint-order="stroke" stroke="#ffffff" stroke-width="3" stroke-linejoin="round">' + esc(train.number || '') + '</text>';
+      });
+    });
+    h += '</svg></div>';
+    main.innerHTML = h;
+    document.getElementById('diaSel4').addEventListener('change', function (e) { curDia = +e.target.value; render(); });
+  }
+
+  // ---------- 検証 ----------
+  function renderCheckView() {
+    var issues = C.validate(data);
+    var msgs = ISSUE_TEXT[lang] || ISSUE_TEXT.ja;
+    var h = '<h3 style="margin-top:0">' + t('viewCheck') + '</h3>';
+    if (!issues.length) h += '<p class="ok">' + t('noIssues') + '</p>';
+    else {
+      h += '<p>' + issues.length + t('issuesFound') + '</p><ul class="issues">';
+      issues.forEach(function (iss) {
+        h += '<li class="' + (iss.level === 'error' ? 'error' : '') + '">' +
+          esc(iss.diagram) + ' / ' + esc(iss.train) +
+          (iss.station ? ' / ' + esc(iss.station) : '') + ': ' + esc(msgs[iss.code] || iss.code) + '</li>';
+      });
+      h += '</ul>';
+    }
+    main.innerHTML = h;
+  }
+
+  // ---------- ファイル入出力 ----------
+  function download(filename, text, mime) {
+    var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  }
+  function readTextFile(file, cb) {
+    file.arrayBuffer().then(function (buf) {
+      var text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+      catch (e) { text = new TextDecoder('shift-jis').decode(buf); }
+      cb(text);
+    });
+  }
+
+  document.getElementById('btnSaveJson').addEventListener('click', function () {
+    download((data.lineName || 'timetable') + '.json', C.exportJSON(data), 'application/json');
+  });
+  document.getElementById('btnExportOud').addEventListener('click', function () {
+    download((data.lineName || 'timetable') + '.oud', C.toOudia(data));
+  });
+  document.getElementById('btnLoadJson').addEventListener('click', function () {
+    document.getElementById('fileJson').click();
+  });
+  document.getElementById('btnImportOud').addEventListener('click', function () {
+    document.getElementById('fileOud').click();
+  });
+  document.getElementById('fileJson').addEventListener('change', function (e) {
+    var f = e.target.files[0]; if (!f) return;
+    readTextFile(f, function (text) {
+      try { data = C.importJSON(text); curDia = 0; selTrain = 0; save(); render(); }
+      catch (err) { alert(t('loadFailed') + err.message); }
+    });
+    e.target.value = '';
+  });
+  document.getElementById('fileOud').addEventListener('change', function (e) {
+    var f = e.target.files[0]; if (!f) return;
+    readTextFile(f, function (text) {
+      try { data = C.fromOudia(text); curDia = 0; selTrain = 0; save(); render(); }
+      catch (err) { alert(t('loadFailed') + err.message); }
+    });
+    e.target.value = '';
+  });
+  document.getElementById('btnSample').addEventListener('click', function () {
+    if (!confirm(t('confirmSample'))) return;
+    data = C.sampleData(); curDia = 0; selTrain = 0; save(); render();
+  });
+  document.getElementById('btnNew').addEventListener('click', function () {
+    if (!confirm(t('confirmNew'))) return;
+    data = C.emptyData(); curDia = 0; selTrain = 0; save(); render();
+  });
+  document.getElementById('btnLang').addEventListener('click', function () {
+    lang = lang === 'ja' ? 'en' : 'ja';
+    try { localStorage.setItem(LS_KEY + '.lang', lang); } catch (e) {}
+    render();
+  });
+  document.querySelectorAll('#tabs button').forEach(function (b) {
+    b.addEventListener('click', function () { view = b.getAttribute('data-view'); render(); });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
