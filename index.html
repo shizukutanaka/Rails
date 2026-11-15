@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Rails — 時刻表管理</title>
+<title>Rails — 利用者の時刻管理</title>
 <style>
   :root { --accent:#0b5cad; --border:#c9ced6; --bg:#f4f6f9; --error:#c0392b; --warn:#b7791f; }
   * { box-sizing: border-box; }
@@ -63,7 +63,7 @@
 </head>
 <body>
 <header>
-  <h1>Rails<span class="sub" data-i18n="appSub">日本の時刻表管理</span></h1>
+  <h1>Rails<span class="sub" data-i18n="appSub">利用者の時刻管理</span></h1>
   <div class="spacer"></div>
   <button id="btnSaveJson" data-i18n="saveJson">JSON保存</button>
   <button id="btnLoadJson" data-i18n="loadJson">JSON読込</button>
@@ -541,7 +541,7 @@ var RailsCore = (function () {
 
   var I18N = {
     ja: {
-      appSub: '日本の時刻表管理', saveJson: 'JSON保存', loadJson: 'JSON読込',
+      appSub: '利用者の時刻管理', saveJson: 'JSON保存', loadJson: 'JSON読込',
       exportOud: 'OuDia書出', importOud: 'OuDia読込', sample: 'サンプル', newData: '新規',
       viewEdit: '編集', viewTrain: '列車時刻表', viewStation: '駅時刻表', viewDiagram: 'ダイヤグラム', viewCheck: '検証',
       lineName: '路線名', stations: '駅', trainTypes: '列車種別', diagram: 'ダイヤ',
@@ -558,7 +558,7 @@ var RailsCore = (function () {
       hour: '時'
     },
     en: {
-      appSub: 'Japanese timetable manager', saveJson: 'Save JSON', loadJson: 'Load JSON',
+      appSub: 'Managing your time with timetables', saveJson: 'Save JSON', loadJson: 'Load JSON',
       exportOud: 'Export OuDia', importOud: 'Import OuDia', sample: 'Sample', newData: 'New',
       viewEdit: 'Edit', viewTrain: 'Train timetable', viewStation: 'Station timetable', viewDiagram: 'Diagram', viewCheck: 'Check',
       lineName: 'Line name', stations: 'Stations', trainTypes: 'Train types', diagram: 'Diagram (service day)',
