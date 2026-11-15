@@ -1,0 +1,1 @@
+{"description":"日本の時刻表管理ソフト (単一HTML Webアプリ)","name":"rails-timetable","private":true,"scripts":{"test":"node tests/test.js"},"version":"0.1.0"}

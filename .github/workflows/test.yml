@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run core tests
+        run: node tests/test.js
+      - name: Syntax-check inline scripts
+        run: |
+          node -e "
+          const fs = require('fs');
+          const html = fs.readFileSync('index.html', 'utf8');
+          const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+          if (!scripts.length) { console.error('no inline script found'); process.exit(1); }
+          scripts.forEach((s, i) => { new Function(s); });
+          console.log(scripts.length + ' inline script(s) parsed OK');
+          "
