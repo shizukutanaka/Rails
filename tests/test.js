@@ -357,5 +357,150 @@ const feedBig = Object.assign({}, feedA, { 'stops.txt': bigStops });
 const zipBig = buildZip(Object.keys(feedBig).map(k => ({ name: k, text: feedBig[k], method: 8 })));
 deepEq(C.fromGtfsZip(new Uint8Array(zipBig)).data, resA.data, 'GTFS ZIP: 大きなファイルでも展開できる');
 
+// ---- GTFS 書き出し ----
+eq(C.formatGtfsTime(480), '08:00:00', 'GTFS書出: 480分は 08:00:00');
+eq(C.formatGtfsTime(1466), '24:26:00', 'GTFS書出: 深夜は 24:26:00 のまま表記');
+eq(C.formatGtfsTime(180), '03:00:00', 'GTFS書出: 始まりは 03:00:00');
+eq(C.formatGtfsTime(null), '', 'GTFS書出: 時刻なしは空');
+
+const expSample = C.toGtfs(sample);
+deepEq(Object.keys(expSample.files),
+  ['agency.txt', 'stops.txt', 'routes.txt', 'calendar.txt', 'trips.txt', 'stop_times.txt'],
+  'GTFS書出: ファイル構成');
+ok(expSample.files['stops.txt'].includes('S1,青葉'), 'GTFS書出: stops に駅が並ぶ');
+ok(expSample.files['calendar.txt'].includes('SVC1,1,1,1,1,1,0,0,'), 'GTFS書出: 平日は月-金のパターン');
+ok(expSample.files['calendar.txt'].includes('SVC2,0,0,0,0,0,1,1,'), 'GTFS書出: 土休日は土日のパターン');
+eq(expSample.files['trips.txt'].trim().split('\n').length, 12, 'GTFS書出: 便は11件 (+ヘッダ)');
+ok(expSample.files['stop_times.txt'].includes('24:26:00'), 'GTFS書出: 深夜の着時刻が 24:26:00 で出る');
+eq(expSample.report.trainCount, 11, 'GTFS書出: 列車数');
+deepEq(expSample.report.items,
+  [{ code: 'types-not-exported', count: 3, names: ['普通', '快速', '特急'] }],
+  'GTFS書出: サンプルで書き出せないのは種別だけ');
+
+// GTFS 往復 (種別は GTFS に無い概念なので、再読み込み時に作られる1種別と typeIndex 0 に置き換えて比較する)
+function normalizeGtfs(data) {
+  const norm = normalize(data);
+  norm.diagrams.forEach(d => d.trains.forEach(tr => { tr[2] = 0; }));
+  return norm;
+}
+const backSample = C.fromGtfs(expSample.files).data;
+deepEq(backSample.types, [{ name: '青葉線', abbr: '青', color: '#000000' }],
+  'GTFS往復: 種別は路線から1つ作られる');
+const normSample = normalizeGtfs(sample); normSample.types = backSample.types.map(t => [t.name, t.abbr, t.color]);
+deepEq(normalizeGtfs(backSample), normSample, 'GTFS往復: サンプルは種別以外が一致');
+deepEq(C.validate(backSample), [], 'GTFS往復: 再読み込みしたデータは検証を通過');
+
+// 読み込んだフィードは無損失で書き出せ、報告もゼロになる
+const expA = C.toGtfs(resA.data);
+deepEq(expA.report.items, [], 'GTFS書出: feedA は報告ゼロ');
+deepEq(C.fromGtfs(expA.files).data, resA.data, 'GTFS往復: feedA は完全に一致 (種別含む)');
+
+// ZIP 往復 (自作 ZIP を自作リーダで読む)
+const zipExp = C.toGtfsZip(resA.data);
+ok(zipExp.bytes[0] === 0x50 && zipExp.bytes[1] === 0x4b && zipExp.bytes[2] === 0x03 && zipExp.bytes[3] === 0x04,
+  'GTFS書出: ZIP のマジック');
+deepEq(C.fromGtfsZip(zipExp.bytes).data, resA.data, 'GTFS往復: ZIP 経由でも完全に一致');
+deepEq(C.fromGtfsZip(C.toGtfsZip(sample).bytes).data, backSample,
+  'GTFS往復: サンプルの ZIP 往復は CSV 往復と同じ結果');
+
+// CSV の引用: カンマを含む駅名がそのまま往復する
+const commaData = {
+  lineName: '引用線',
+  stations: [{ name: '甲,乙' }, { name: '丙' }],
+  types: [{ name: '引用線', abbr: '引', color: '#000000' }],
+  diagrams: [{ name: '平日', trains: [Object.assign(C.newTrain(2), {
+    number: '1', direction: 'down',
+    stops: [S(1, null, 600), S(1, 610, null)]
+  })] }]
+};
+ok(C.toGtfs(commaData).files['stops.txt'].includes('"甲,乙"'), 'GTFS書出: カンマを含む駅名は引用される');
+eq(C.fromGtfs(C.toGtfs(commaData).files).data.stations[0].name, '甲,乙', 'GTFS往復: カンマを含む駅名');
+
+// 基準便が止まらない駅も、ダミーの通過で駅の並びが保たれる
+const anchorData = {
+  lineName: '分岐線',
+  stations: [{ name: 'A' }, { name: 'B' }, { name: 'C' }],
+  types: [{ name: '分岐線', abbr: '分', color: '#000000' }],
+  diagrams: [{ name: '平日', trains: [
+    Object.assign(C.newTrain(3), { number: '1', direction: 'down',
+      stops: [S(1, null, 600), S(1, 610, null), S(3, null, null)] }),
+    Object.assign(C.newTrain(3), { number: '2', direction: 'down',
+      stops: [S(3, null, null), S(1, null, 700), S(1, 710, null)] })
+  ] }]
+};
+const expAnchor = C.toGtfs(anchorData);
+const backAnchor = C.fromGtfs(expAnchor.files).data;
+deepEq(backAnchor.stations.map(s => s.name), ['A', 'B', 'C'], 'GTFS往復: 基準便が止まらない駅も消えない');
+eq(backAnchor.diagrams[0].trains.find(tr => tr.number === '1').stops[2].s, STOP.PASS,
+  'GTFS往復: ダミーを補った駅は通過になる');
+eq(backAnchor.diagrams[0].trains.find(tr => tr.number === '2').stops[0].s, STOP.SKIP,
+  'GTFS往復: 運行範囲外の経由なしはそのまま');
+const anchorItems = {};
+expAnchor.report.items.forEach(i => { anchorItems[i.code] = i; });
+eq(anchorItems['stops-state-changed'].count, 1, 'GTFS書出: ダミーを補った停車は状態変化として報告');
+
+// ダイヤ名の往復 (毎日 / 特定日 / 曜日不明)
+function oneTrainDia(name) {
+  return { name: name, trains: [Object.assign(C.newTrain(2), {
+    number: '1', direction: 'down', stops: [S(1, null, 600), S(1, 610, null)]
+  })] };
+}
+const diaNameData = {
+  lineName: '名前線',
+  stations: [{ name: 'A' }, { name: 'B' }],
+  types: [{ name: '名前線', abbr: '名', color: '#000000' }],
+  diagrams: [oneTrainDia('毎日'), oneTrainDia('特定日'), oneTrainDia('曜日不明')]
+};
+const backDiaNames = C.fromGtfs(C.toGtfs(diaNameData).files).data;
+deepEq(backDiaNames.diagrams.map(d => d.name), ['毎日', '特定日', '曜日不明'],
+  'GTFS往復: 毎日/特定日/曜日不明のダイヤ名が保たれる');
+
+// 書き出せない要素は件数と理由つきで報告される
+function lossyTrain(number, name, stops) {
+  return Object.assign(C.newTrain(5), { number: number, name: name || '', typeIndex: 1, direction: 'down', stops: stops });
+}
+const lossy = {
+  lineName: '損失線',
+  stations: [{ name: '甲' }, { name: '乙' }, { name: '乙' }, { name: '丙' }, { name: '丁' }],
+  types: [
+    { name: '普通', abbr: '普', color: '#000000' },
+    { name: '快速', abbr: '快', color: '#ff0000' }
+  ],
+  diagrams: [
+    { name: '平日', trains: [
+      lossyTrain('1', 'あおぞら', [S(1, null, 600), S(3, null, null), S(2, 610, 611), S(1, 620, null), S(0, null, null)]),
+      lossyTrain('99', '', [S(3, null, null), S(3, null, null), S(3, null, null), S(3, null, null), S(3, null, null)])
+    ] },
+    { name: '月火水木金', trains: [
+      lossyTrain('2', '', [S(1, null, 700), S(1, 705, 706), S(1, 710, 711), S(1, 715, null), S(3, null, null)])
+    ] },
+    { name: '臨時', trains: [
+      lossyTrain('3', '', [S(1, null, 800), S(1, 805, 806), S(1, 810, 811), S(1, 815, null), S(3, null, null)])
+    ] },
+    { name: '空', trains: [] }
+  ]
+};
+const expLossy = C.toGtfs(lossy);
+const lossyItems = {};
+expLossy.report.items.forEach(i => { lossyItems[i.code] = i; });
+eq(lossyItems['types-not-exported'].count, 2, 'GTFS書出(損失): 種別の件数');
+deepEq(lossyItems['types-not-exported'].names, ['普通', '快速'], 'GTFS書出(損失): 種別の名前');
+eq(lossyItems['train-names-not-exported'].count, 1, 'GTFS書出(損失): 列車名の件数');
+deepEq(lossyItems['train-names-not-exported'].names, ['あおぞら'], 'GTFS書出(損失): 列車名');
+eq(lossyItems['diagram-names-not-exported'].count, 2, 'GTFS書出(損失): 表せないダイヤ名の件数 (月火水木金は「平日」に戻る)');
+deepEq(lossyItems['diagram-names-not-exported'].names, ['月火水木金', '臨時'], 'GTFS書出(損失): 表せないダイヤ名');
+eq(lossyItems['diagrams-merged'].count, 1, 'GTFS書出(損失): 同じパターンのダイヤは統合される');
+deepEq(lossyItems['diagrams-merged'].names, ['月火水木金'], 'GTFS書出(損失): 統合されるダイヤ名');
+eq(lossyItems['diagrams-no-trains'].count, 1, 'GTFS書出(損失): 列車のないダイヤ');
+eq(lossyItems['stations-duplicate-names'].count, 1, 'GTFS書出(損失): 同名の駅');
+deepEq(lossyItems['stations-duplicate-names'].names, ['乙'], 'GTFS書出(損失): 同名の駅名');
+eq(lossyItems['stations-unserved'].count, 1, 'GTFS書出(損失): どの列車も使わない駅');
+deepEq(lossyItems['stations-unserved'].names, ['丁'], 'GTFS書出(損失): 使われない駅名');
+eq(lossyItems['trains-no-stops'].count, 1, 'GTFS書出(損失): 停車のない列車');
+eq(lossyItems['stops-state-changed'].count, 2, 'GTFS書出(損失): 状態を保持できない停車 (範囲内の経由なし + 未設定)');
+eq(lossyItems['pass-arrival-dropped'].count, 1, 'GTFS書出(損失): 通過駅の着時刻');
+eq(expLossy.report.trainCount, 3, 'GTFS書出(損失): 書き出された列車数');
+eq(expLossy.report.diagramCount, 3, 'GTFS書出(損失): 書き出されたダイヤ数');
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
