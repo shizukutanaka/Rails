@@ -70,6 +70,7 @@
   <button id="btnExportOud" data-i18n="exportOud">OuDia書出</button>
   <button id="btnImportOud" data-i18n="importOud">OuDia読込</button>
   <button id="btnImportGtfs" data-i18n="importGtfs">GTFS読込</button>
+  <button id="btnExportGtfs" data-i18n="exportGtfs">GTFS書出</button>
   <button id="btnSample" data-i18n="sample">サンプル</button>
   <button id="btnNew" data-i18n="newData">新規</button>
   <button id="btnLang">EN</button>
@@ -459,10 +460,11 @@ var RailsCore = (function () {
     return data;
   }
 
-  // ---- GTFS (静的フィード .zip の読み込みのみ) ----
-  // 対応ファイル: stops / routes / trips / stop_times / calendar / calendar_dates / agency / frequencies
+  // ---- GTFS (静的フィード .zip の読み込み / 書き出し) ----
+  // 読み込み対応ファイル: stops / routes / trips / stop_times / calendar / calendar_dates / agency / frequencies
   // Rails は「1路線・駅の並び」を持つモデルなので、取り込むのは便が最も多い1路線だけ。
   // 取り込めない要素は黙って捨てず、report.items に件数と理由 (code) を残して返す。
+  // 書き出しも同じ作法で、GTFS に表現できない要素は report.items に残す (下記 toGtfs)。
 
   var GTFS_LIMITS = { entries: 2000, fileBytes: 32 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
   var GTFS_WANTED = {
@@ -963,6 +965,308 @@ var RailsCore = (function () {
     return fromGtfs(files);
   }
 
+  // ---- GTFS 書き出し ----
+  // Rails のデータ -> GTFS の CSV 群 (agency / stops / routes / calendar / trips / stop_times)。
+  // GTFS に表現できない要素は黙って落とさず、読み込みと同じ形式の report.items に残す:
+  //   列車種別そのもの (再読み込み時は路線から1種別だけが作られる)、列車名、
+  //   曜日パターンで表せないダイヤ名、同じパターンに統合されるダイヤ、列車のないダイヤ、
+  //   同名の駅 (再読み込み時に統合される)、どの列車も停車/通過しない駅 (再読み込み時に消える)、
+  //   停車/通過のない列車、状態を保持できない停車 (未設定・運行範囲内の経由なし)、通過駅の着時刻。
+  // 駅の並びは読み込み側が「基準便 (下り優先・停車駅が最多)」の停車順から決めるため、
+  // 基準便が止まらない駅は再読み込み時に駅ごと消えてしまう。それを防ぐため、基準便には
+  // 他の列車が使う駅の位置に「通過 (時刻なし)」のダミー停車を補う (状態の変化として報告する)。
+
+  function csvEscape(v) {
+    var s = v == null ? '' : String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  function csvText(rows) {
+    return rows.map(function (r) { return r.map(csvEscape).join(','); }).join('\n') + '\n';
+  }
+
+  // Rails の分 -> GTFS の "HH:MM:SS" (24時以降もそのまま表記する)
+  function formatGtfsTime(min) {
+    if (min == null) return '';
+    return pad2(Math.floor(min / 60)) + ':' + pad2(min % 60) + ':00';
+  }
+
+  var GTFS_DAY_CHARS = '月火水木金土日';
+  // 曜日パターン (月..日の bool 配列、null は calendar に載せない) -> 読み込み側が付けるダイヤ名
+  function gtfsPatternName(bits) {
+    if (bits === null) return '曜日不明';
+    if (bits.every(function (d) { return !d; })) return '特定日';
+    var s = bits.map(function (d) { return d ? '1' : '0'; }).join('');
+    if (s === '1111111') return '毎日';
+    if (s === '1111100') return '平日';
+    if (s === '0000011') return '土休日';
+    var out = '';
+    for (var i = 0; i < 7; i++) if (bits[i]) out += GTFS_DAY_CHARS[i];
+    return out;
+  }
+  // ダイヤ名 -> 曜日パターン。表せない名前は「毎日」に寄せ、呼び出し側で報告する。
+  function gtfsPatternBits(name) {
+    if (name === '毎日') return [true, true, true, true, true, true, true];
+    if (name === '平日') return [true, true, true, true, true, false, false];
+    if (name === '土休日') return [false, false, false, false, false, true, true];
+    if (name === '特定日') return [false, false, false, false, false, false, false];
+    if (name === '曜日不明') return null;
+    if (name && name.split('').every(function (c) { return GTFS_DAY_CHARS.indexOf(c) >= 0; })) {
+      var bits = [false, false, false, false, false, false, false];
+      name.split('').forEach(function (c) { bits[GTFS_DAY_CHARS.indexOf(c)] = true; });
+      return bits;
+    }
+    return [true, true, true, true, true, true, true];
+  }
+  function gtfsPatternKey(bits) {
+    if (bits === null) return 'unknown';
+    if (bits.every(function (d) { return !d; })) return 'dates';
+    return 'days:' + bits.map(function (d) { return d ? '1' : '0'; }).join('');
+  }
+
+  function toGtfs(data) {
+    var types = data.types || [];
+    var n = data.stations.length;
+    var counters = {
+      typesNotExported: 0, trainNames: 0, diagramNames: 0, diagramsMerged: 0,
+      diagramsNoTrains: 0, dupStations: 0, unservedStations: 0,
+      trainsNoStops: 0, stopsStateChanged: 0, passArrivalDropped: 0
+    };
+    var typeNames = [], trainNameList = [], diagramNameList = [], mergedDiaNames = [],
+      noTrainDiaNames = [], dupStationNames = [], unservedStationNames = [], noStopTrainNames = [];
+
+    // 同名の駅は再読み込み時に最初の同名駅へ統合される
+    var seenNames = {};
+    data.stations.forEach(function (st) {
+      if (seenNames[st.name]) {
+        counters.dupStations++;
+        if (dupStationNames.indexOf(st.name) < 0) dupStationNames.push(st.name);
+      } else seenNames[st.name] = true;
+    });
+    // どの列車も停車/通過しない駅は、再読み込み時に駅の並びへ置けず消える
+    var servedAny = [];
+    for (var si = 0; si < n; si++) servedAny.push(false);
+    data.diagrams.forEach(function (dia) {
+      dia.trains.forEach(function (train) {
+        for (var i = 0; i < n; i++) {
+          var st = train.stops[i];
+          if (st && (st.s === STOP.STOP || st.s === STOP.PASS)) servedAny[i] = true;
+        }
+      });
+    });
+    data.stations.forEach(function (st, i) {
+      if (!servedAny[i]) { counters.unservedStations++; unservedStationNames.push(st.name); }
+    });
+
+    // 便の組み立て (rows は駅インデックス -> stop_times の行)
+    var trips = [];
+    var tripsPerDiagram = data.diagrams.map(function () { return 0; });
+    data.diagrams.forEach(function (dia, di) {
+      dia.trains.forEach(function (train) {
+        var rows = {}, served = [];
+        for (var i = 0; i < n; i++) {
+          var st = train.stops[i] || newStop();
+          if (st.s === STOP.STOP) {
+            rows[i] = { arr: formatGtfsTime(st.arr), dep: formatGtfsTime(st.dep), pickup: '0', drop: '0' };
+            served.push(i);
+          } else if (st.s === STOP.PASS) {
+            if (st.arr != null) counters.passArrivalDropped++; // 通過は発時刻のみ保持される
+            rows[i] = { arr: '', dep: formatGtfsTime(st.dep != null ? st.dep : st.arr), pickup: '1', drop: '1' };
+            served.push(i);
+          }
+        }
+        if (!served.length) {
+          counters.trainsNoStops++;
+          noStopTrainNames.push(train.number || train.name || '');
+          return;
+        }
+        if (train.name) { counters.trainNames++; trainNameList.push(train.name); }
+        trips.push({ train: train, diagram: di, rows: rows, placeholder: {} });
+        tripsPerDiagram[di]++;
+      });
+    });
+
+    // 基準便 (読み込み側の規則: 下り優先・停車駅が最多・同数なら先勝ち) を再現し、
+    // 基準便が止まらない「使われている駅」を通過ダミーで補って駅の並びを保つ
+    var pool = trips.filter(function (tr) { return tr.train.direction !== 'up'; });
+    if (!pool.length) pool = trips;
+    var anchor = pool[0] || null;
+    pool.forEach(function (tr) {
+      if (Object.keys(tr.rows).length > Object.keys(anchor.rows).length) anchor = tr;
+    });
+    if (anchor) {
+      for (var ai = 0; ai < n; ai++) {
+        if (servedAny[ai] && !anchor.rows[ai]) anchor.placeholder[ai] = true;
+      }
+    }
+    // 状態を保持できない停車: 未設定は必ず変わり、経由なしは運行範囲内だと通過になり、
+    // 基準便に補ったダミー停車 (経由なし) も通過として読み込まれる
+    trips.forEach(function (tr) {
+      var idxs = Object.keys(tr.rows).concat(Object.keys(tr.placeholder)).map(Number);
+      var lo = Math.min.apply(null, idxs), hi = Math.max.apply(null, idxs);
+      var counted = {};
+      function countState(i) {
+        if (!counted[i]) { counted[i] = true; counters.stopsStateChanged++; }
+      }
+      for (var i = 0; i < n; i++) {
+        var st = tr.train.stops[i] || newStop();
+        if (st.s === STOP.NONE) countState(i);
+        else if (st.s === STOP.SKIP && i > lo && i < hi) countState(i);
+      }
+      Object.keys(tr.placeholder).forEach(function (k) {
+        var st2 = tr.train.stops[+k] || newStop();
+        if (st2.s === STOP.SKIP) countState(+k);
+      });
+    });
+
+    // ダイヤ (service) の曜日パターン。列車の出たダイヤだけが対象
+    var services = [], patternSeen = {};
+    data.diagrams.forEach(function (dia, di) {
+      if (!tripsPerDiagram[di]) {
+        counters.diagramsNoTrains++;
+        noTrainDiaNames.push(dia.name);
+        services.push(null);
+        return;
+      }
+      var bits = gtfsPatternBits(dia.name);
+      var key = gtfsPatternKey(bits);
+      if (patternSeen[key]) { counters.diagramsMerged++; mergedDiaNames.push(dia.name); }
+      else patternSeen[key] = true;
+      if (gtfsPatternName(bits) !== dia.name) { counters.diagramNames++; diagramNameList.push(dia.name); }
+      services.push({ id: 'SVC' + (di + 1), bits: bits });
+    });
+
+    // 路線・種別: GTFS の routes は1つだけ。種別は再読み込み時に路線から作り直されるため、
+    // その結果が元の種別と一致しない場合は報告する
+    var shortName = (types.length === 1 && types[0].abbr) ? types[0].abbr : (data.lineName || '');
+    var rawColor = types.length && types[0].color ? String(types[0].color).replace(/^#/, '') : '';
+    var routeColor = /^[0-9a-f]{6}$/i.test(rawColor) ? rawColor : '';
+    var reTypeName = data.lineName || shortName || '鉄道';
+    var reType = [{
+      name: reTypeName,
+      abbr: (shortName && shortName !== reTypeName) ? shortName.slice(0, 4) : reTypeName.slice(0, 1),
+      color: routeColor ? '#' + routeColor.toLowerCase() : '#000000'
+    }];
+    if (JSON.stringify(reType) !== JSON.stringify(types)) {
+      counters.typesNotExported = types.length;
+      typeNames = types.map(function (ty) { return ty.name; });
+    }
+
+    var agencyRows = [
+      ['agency_id', 'agency_name', 'agency_url', 'agency_timezone', 'agency_lang'],
+      ['A1', data.lineName || 'Rails', '', 'Asia/Tokyo', 'ja']
+    ];
+    var stopRows = [['stop_id', 'stop_name']];
+    data.stations.forEach(function (st, i) { stopRows.push(['S' + (i + 1), st.name]); });
+    var routeRows = [
+      ['route_id', 'agency_id', 'route_short_name', 'route_long_name', 'route_type', 'route_color'],
+      ['R1', 'A1', shortName, data.lineName || '', '2', routeColor]
+    ];
+    var calendarRows = [['service_id', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'start_date', 'end_date']];
+    services.forEach(function (svc) {
+      if (!svc || !svc.bits) return; // 曜日不明のダイヤは calendar に載せない
+      calendarRows.push([svc.id].concat(svc.bits.map(function (d) { return d ? '1' : '0'; }), ['20260101', '20261231']));
+    });
+    var tripRows = [['route_id', 'service_id', 'trip_id', 'trip_headsign', 'trip_short_name', 'direction_id']];
+    var stopTimeRows = [['trip_id', 'arrival_time', 'departure_time', 'stop_id', 'stop_sequence', 'pickup_type', 'drop_off_type']];
+    trips.forEach(function (tr, ti) {
+      var tripId = 'T' + (ti + 1);
+      tripRows.push(['R1', services[tr.diagram].id, tripId, tr.train.note || '', tr.train.number || '',
+        tr.train.direction === 'up' ? '1' : '0']);
+      var order = travelOrder(tr.train, n), seq = 0;
+      order.forEach(function (i) {
+        var row = tr.rows[i] || (tr.placeholder[i] ? { arr: '', dep: '', pickup: '1', drop: '1' } : null);
+        if (!row) return;
+        seq++;
+        stopTimeRows.push([tripId, row.arr, row.dep, 'S' + (i + 1), String(seq), row.pickup, row.drop]);
+      });
+    });
+
+    var files = {
+      'agency.txt': csvText(agencyRows),
+      'stops.txt': csvText(stopRows),
+      'routes.txt': csvText(routeRows),
+      'calendar.txt': csvText(calendarRows),
+      'trips.txt': csvText(tripRows),
+      'stop_times.txt': csvText(stopTimeRows)
+    };
+    var items = [];
+    function item(code, count, names) {
+      if (count > 0) items.push({ code: code, count: count, names: names || [] });
+    }
+    item('types-not-exported', counters.typesNotExported, typeNames);
+    item('train-names-not-exported', counters.trainNames, trainNameList);
+    item('diagram-names-not-exported', counters.diagramNames, diagramNameList);
+    item('diagrams-merged', counters.diagramsMerged, mergedDiaNames);
+    item('diagrams-no-trains', counters.diagramsNoTrains, noTrainDiaNames);
+    item('stations-duplicate-names', counters.dupStations, dupStationNames);
+    item('stations-unserved', counters.unservedStations, unservedStationNames);
+    item('trains-no-stops', counters.trainsNoStops, noStopTrainNames);
+    item('stops-state-changed', counters.stopsStateChanged);
+    item('pass-arrival-dropped', counters.passArrivalDropped);
+    var exportedDiagrams = tripsPerDiagram.filter(function (c) { return c > 0; }).length;
+    return {
+      files: files,
+      report: {
+        lineName: data.lineName || '', stationCount: n,
+        trainCount: trips.length, diagramCount: exportedDiagrams, items: items
+      }
+    };
+  }
+
+  // ZIP の最小書き出し (無圧縮 stored + CRC32)。依存ゼロで GTFS フィードを配るためのもの。
+  var CRC_TABLE = null;
+  function crc32(bytes) {
+    if (!CRC_TABLE) {
+      CRC_TABLE = [];
+      for (var m = 0; m < 256; m++) {
+        var c = m;
+        for (var k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        CRC_TABLE.push(c);
+      }
+    }
+    var crc = 0xffffffff;
+    for (var i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  function zipStore(entries) {
+    var enc = new TextEncoder();
+    var out = [], central = [], offset = 0;
+    function w16(v) { out.push(v & 0xff, (v >>> 8) & 0xff); }
+    function w32(v) { out.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff); }
+    function wBytes(b) { for (var i = 0; i < b.length; i++) out.push(b[i]); }
+    entries.forEach(function (e) {
+      var name = enc.encode(e.name), crc = crc32(e.data), start = offset;
+      w32(0x04034b50); w16(20); w16(0x0800); w16(0); w16(0); w16(0);
+      w32(crc); w32(e.data.length); w32(e.data.length); w16(name.length); w16(0);
+      wBytes(name); wBytes(e.data);
+      offset += 30 + name.length + e.data.length;
+      central.push({ name: name, crc: crc, size: e.data.length, start: start });
+    });
+    var cdStart = offset;
+    central.forEach(function (c) {
+      var body = [];
+      function c16(v) { body.push(v & 0xff, (v >>> 8) & 0xff); }
+      function c32(v) { body.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff); }
+      c32(0x02014b50); c16(20); c16(20); c16(0x0800); c16(0); c16(0); c16(0);
+      c32(c.crc); c32(c.size); c32(c.size); c16(c.name.length);
+      c16(0); c16(0); c16(0); c16(0); c32(0); c32(c.start);
+      body.forEach(function (b) { out.push(b); });
+      for (var i = 0; i < c.name.length; i++) out.push(c.name[i]);
+      offset += 46 + c.name.length;
+    });
+    w32(0x06054b50); w16(0); w16(0); w16(central.length); w16(central.length);
+    w32(offset - cdStart); w32(cdStart); w16(0);
+    return new Uint8Array(out);
+  }
+
+  function toGtfsZip(data) {
+    var res = toGtfs(data);
+    var enc = new TextEncoder();
+    var order = ['agency.txt', 'stops.txt', 'routes.txt', 'calendar.txt', 'trips.txt', 'stop_times.txt'];
+    var entries = order.map(function (name) { return { name: name, data: enc.encode(res.files[name]) }; });
+    return { bytes: zipStore(entries), files: res.files, report: res.report };
+  }
+
   // ---- JSON ----
   function exportJSON(data) {
     return JSON.stringify(data, null, 2);
@@ -1033,6 +1337,7 @@ var RailsCore = (function () {
     colorToOud: colorToOud, colorFromOud: colorFromOud,
     toOudia: toOudia, fromOudia: fromOudia,
     fromGtfs: fromGtfs, fromGtfsZip: fromGtfsZip,
+    toGtfs: toGtfs, toGtfsZip: toGtfsZip, formatGtfsTime: formatGtfsTime,
     exportJSON: exportJSON, importJSON: importJSON,
     sampleData: sampleData
   };
@@ -1049,8 +1354,19 @@ var RailsCore = (function () {
   var I18N = {
     ja: {
       appSub: '利用者の時刻管理', saveJson: 'JSON保存', loadJson: 'JSON読込',
-      exportOud: 'OuDia書出', importOud: 'OuDia読込', importGtfs: 'GTFS読込', sample: 'サンプル', newData: '新規',
+      exportOud: 'OuDia書出', importOud: 'OuDia読込', importGtfs: 'GTFS読込', exportGtfs: 'GTFS書出', sample: 'サンプル', newData: '新規',
       gtfsImported: 'GTFS を読み込みました: {0} ({1}駅・{2}列車・{3}ダイヤ)',
+      gtfsExported: 'GTFS を書き出しました: {0} ({1}駅・{2}列車・{3}ダイヤ)',
+      expTypes: '列車種別 {0}件は GTFS に表現できないため、そのままでは書き出せません (再読み込み時は路線名から1種別になります): {1}',
+      expTrainNames: '列車名 {0}件は GTFS に表現できないため書き出せませんでした: {1}',
+      expDiagramNames: 'ダイヤ名 {0}件は曜日パターンで表せないため、再読み込み時に名前が変わります: {1}',
+      expDiagramsMerged: '同じ曜日パターンのダイヤ {0}件は、再読み込み時に1つのダイヤにまとめられます: {1}',
+      expDiagramsNoTrains: '列車のないダイヤ {0}件は書き出せませんでした: {1}',
+      expDupStations: '同名の駅 {0}件は、再読み込み時に最初の同名駅にまとめられます: {1}',
+      expUnservedStations: 'どの列車も停車・通過しない駅 {0}件は、再読み込み時に消えます: {1}',
+      expTrainsNoStops: '停車・通過のない列車 {0}件は書き出せませんでした: {1}',
+      expStopsState: '状態を保持できない停車 {0}件があります (未設定と運行範囲内の経由なしは、再読み込み時に状態が変わります)',
+      expPassArrival: '通過駅の着時刻 {0}件は書き出せませんでした (発時刻のみ保持されます)',
       repRoutesSkipped: '取り込まなかった路線 ({0}件): {1}',
       repTripsFrequency: '発車間隔ベースの便 {0}件は取り込めませんでした (時刻が固定されていないため)',
       repTripsNoTimes: '停車を取り込めなかった便 {0}件は取り込みませんでした',
@@ -1077,8 +1393,19 @@ var RailsCore = (function () {
     },
     en: {
       appSub: 'Managing your time with timetables', saveJson: 'Save JSON', loadJson: 'Load JSON',
-      exportOud: 'Export OuDia', importOud: 'Import OuDia', importGtfs: 'Import GTFS', sample: 'Sample', newData: 'New',
+      exportOud: 'Export OuDia', importOud: 'Import OuDia', importGtfs: 'Import GTFS', exportGtfs: 'Export GTFS', sample: 'Sample', newData: 'New',
       gtfsImported: 'GTFS imported: {0} ({1} stations, {2} trains, {3} service patterns)',
+      gtfsExported: 'GTFS exported: {0} ({1} stations, {2} trains, {3} service patterns)',
+      expTypes: '{0} train type(s) cannot be represented in GTFS and were not exported as-is (re-import creates a single type from the route): {1}',
+      expTrainNames: '{0} train name(s) cannot be represented in GTFS and were not exported: {1}',
+      expDiagramNames: '{0} diagram name(s) cannot be expressed as a weekday pattern and will change on re-import: {1}',
+      expDiagramsMerged: '{0} diagram(s) share a weekday pattern and will be merged into one diagram on re-import: {1}',
+      expDiagramsNoTrains: '{0} diagram(s) have no trains and were not exported: {1}',
+      expDupStations: '{0} station(s) share a name with an earlier station and will be merged into it on re-import: {1}',
+      expUnservedStations: '{0} station(s) are not served by any train and will disappear on re-import: {1}',
+      expTrainsNoStops: '{0} train(s) have no stops or passes and were not exported: {1}',
+      expStopsState: '{0} stop(s) cannot keep their state (unset stops, and not-routed stops inside the served range, change state on re-import)',
+      expPassArrival: '{0} arrival time(s) at passing stations were not exported (only the departure time is kept)',
       repRoutesSkipped: 'Routes not imported ({0}): {1}',
       repTripsFrequency: '{0} headway-based trip(s) could not be imported (no fixed times)',
       repTripsNoTimes: '{0} trip(s) had no importable stops and were skipped',
@@ -1563,6 +1890,37 @@ var RailsCore = (function () {
     });
     return lines.join('\n');
   }
+  function downloadBytes(filename, bytes) {
+    var blob = new Blob([bytes], { type: 'application/zip' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  }
+  var GTFS_EXP_KEYS = {
+    'types-not-exported': 'expTypes', 'train-names-not-exported': 'expTrainNames',
+    'diagram-names-not-exported': 'expDiagramNames', 'diagrams-merged': 'expDiagramsMerged',
+    'diagrams-no-trains': 'expDiagramsNoTrains', 'stations-duplicate-names': 'expDupStations',
+    'stations-unserved': 'expUnservedStations', 'trains-no-stops': 'expTrainsNoStops',
+    'stops-state-changed': 'expStopsState', 'pass-arrival-dropped': 'expPassArrival'
+  };
+  function gtfsExportReportText(report) {
+    var lines = [t('gtfsExported')
+      .replace('{0}', report.lineName).replace('{1}', report.stationCount)
+      .replace('{2}', report.trainCount).replace('{3}', report.diagramCount)];
+    report.items.forEach(function (item) {
+      var key = GTFS_EXP_KEYS[item.code];
+      if (!key) return;
+      lines.push(t(key).replace('{0}', item.count).replace('{1}', item.names.join(', ')));
+    });
+    return lines.join('\n');
+  }
+  document.getElementById('btnExportGtfs').addEventListener('click', function () {
+    var res = C.toGtfsZip(data);
+    downloadBytes((data.lineName || 'timetable') + '-gtfs.zip', res.bytes);
+    alert(gtfsExportReportText(res.report));
+  });
   document.getElementById('btnImportGtfs').addEventListener('click', function () {
     document.getElementById('fileGtfs').click();
   });
