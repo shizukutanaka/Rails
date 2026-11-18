@@ -706,7 +706,8 @@ var RailsCore = (function () {
 
     var counters = {
       routesSkipped: 0, tripsFrequency: 0, tripsNoTimes: 0, stopsUnplaced: 0,
-      stopsMerged: 0, timesDropped: 0, timesRounded: 0, timesMissing: 0
+      stopsMerged: 0, timesDropped: 0, timesRounded: 0, timesMissing: 0,
+      directionsCorrected: 0
     };
     var skippedRouteNames = [], unplacedStopNames = [];
     function noteUnplaced(name) {
@@ -809,12 +810,21 @@ var RailsCore = (function () {
     if (!stationNames.length) throw new Error('GTFS feed: no stops could be placed on the line');
 
     function directionOf(t) {
-      var d = rawDirection(t);
-      if (d) return d;
+      // 方向は停車順 (駅の並びに対する向き) から判定し、direction_id は補助に留める。
+      // 実フィードには direction_id が両方向とも同じ値になっているものがあり
+      // (例: 鹿児島市営バス GTFS-JP は全便 direction_id=1)、それを信じると
+      // 半数の便の方向が逆になり、時刻の逆行として検証エラーが大量に出る。
       var idxs = [];
       seqStopIds(t).forEach(function (id) {
         if (stopIndexById[id] != null) idxs.push(stopIndexById[id]);
       });
+      var d = rawDirection(t);
+      if (idxs.length >= 2 && idxs[0] !== idxs[idxs.length - 1]) {
+        var inferred = idxs[0] < idxs[idxs.length - 1] ? 'down' : 'up';
+        if (d && d !== inferred) counters.directionsCorrected++;
+        return inferred;
+      }
+      if (d) return d;
       if (idxs.length >= 2) return idxs[0] <= idxs[idxs.length - 1] ? 'down' : 'up';
       return 'down';
     }
@@ -886,6 +896,16 @@ var RailsCore = (function () {
         if (served.indexOf(ix) < 0) served.push(ix);
       });
       if (!served.length) return null;
+      // 始発・終着の正規化: 実フィードでは始発にも着時刻、終着にも発時刻が
+      // 同じ値で入っていることが多い (鹿児島市営バスでは全便)。そのまま取り込むと
+      // 終着駅の駅時刻表に「終着駅行きの発車」が現れてしまうため、アプリのモデル
+      // (始発は発のみ・終着は着のみ) に合わせ、反対側の時刻があれば片方を落とす。
+      if (served.length >= 2) {
+        var firstStop = train.stops[served[0]];
+        if (firstStop.dep != null) firstStop.arr = null;
+        var lastStop = train.stops[served[served.length - 1]];
+        if (lastStop.arr != null) lastStop.dep = null;
+      }
       // 運行範囲の内側で停車しない駅は「通過」、範囲の外は「経由なし」のまま
       var lo = Math.min.apply(null, served), hi = Math.max.apply(null, served);
       for (i = lo + 1; i < hi; i++) {
@@ -947,6 +967,7 @@ var RailsCore = (function () {
     item('times-dropped', counters.timesDropped);
     item('times-seconds-rounded', counters.timesRounded);
     item('times-missing', counters.timesMissing);
+    item('directions-corrected', counters.directionsCorrected);
     item('calendar-exceptions', calDateRows.length);
     item('services-merged', servicesMerged);
     return {
@@ -1372,6 +1393,7 @@ var RailsCore = (function () {
       repTripsNoTimes: '停車を取り込めなかった便 {0}件は取り込みませんでした',
       repStopsUnplaced: '駅の並びに置けなかった停車 {0}件を取り込めませんでした (駅: {1})',
       repStopsMerged: '同名の駅 {0}件を既存の駅にまとめました',
+      repDirectionsCorrected: '方向の表示 (direction_id) が実際の運行と逆だった便 {0}件は、停車順から判定し直しました',
       repTimesDropped: '取り込めなかった時刻 {0}件 (対応範囲 3:00〜27:59 の外、または形式が不正)',
       repTimesRounded: '秒単位の時刻 {0}件を分に丸めました',
       repTimesMissing: '時刻のない停車 {0}件を時刻なしで取り込みました',
@@ -1411,6 +1433,7 @@ var RailsCore = (function () {
       repTripsNoTimes: '{0} trip(s) had no importable stops and were skipped',
       repStopsUnplaced: '{0} stop time(s) could not be placed on the line and were skipped (stops: {1})',
       repStopsMerged: '{0} stop(s) with duplicate names were merged into existing stations',
+      repDirectionsCorrected: '{0} trip(s) had a direction_id opposite to their actual travel direction and were re-derived from their stop order',
       repTimesDropped: '{0} time(s) could not be imported (outside 3:00-27:59 or invalid format)',
       repTimesRounded: '{0} time(s) with seconds were rounded to minutes',
       repTimesMissing: '{0} stop(s) had no times and were imported without times',
@@ -1876,6 +1899,7 @@ var RailsCore = (function () {
     'routes-skipped': 'repRoutesSkipped', 'trips-frequency': 'repTripsFrequency',
     'trips-no-times': 'repTripsNoTimes', 'stops-unplaced': 'repStopsUnplaced',
     'stops-merged': 'repStopsMerged', 'times-dropped': 'repTimesDropped',
+    'directions-corrected': 'repDirectionsCorrected',
     'times-seconds-rounded': 'repTimesRounded', 'times-missing': 'repTimesMissing',
     'calendar-exceptions': 'repCalExceptions', 'services-merged': 'repServicesMerged'
   };
