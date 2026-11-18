@@ -275,6 +275,34 @@ const resD = C.fromGtfs(feedD);
 eq(resD.data.diagrams[0].trains.find(t => t.number === '301').direction, 'down', 'GTFS: direction_id なしは駅順から推定 (下り)');
 eq(resD.data.diagrams[0].trains.find(t => t.number === '302').direction, 'up', 'GTFS: direction_id なしは駅順から推定 (上り)');
 
+// direction_id が両方向とも同じ値の実フィード (鹿児島市営バス GTFS-JP で実測:
+// 全便 direction_id=1 で、方向ごとに別 stop_id・同じ停留所名) を再現する。
+// direction_id を信じると半数の便の方向が逆になり、時刻の逆行エラーになる。
+const feedE = {
+  'stops.txt': 'stop_id,stop_name\nS1,北浜\nS2,中央\nS3,港南\nX1,港南\nX2,中央\nX3,北浜\n',
+  'routes.txt': feedA['routes.txt'],
+  'trips.txt': 'route_id,service_id,trip_id,trip_headsign,direction_id,trip_short_name\n' +
+    'R1,X,TE1,港南,1,401\nR1,X,TE2,北浜,1,402\n',
+  'stop_times.txt': 'trip_id,arrival_time,departure_time,stop_id,stop_sequence\n' +
+    'TE1,08:00:00,08:00:00,S1,1\nTE1,08:05:00,08:05:00,S2,2\nTE1,08:10:00,08:10:00,S3,3\n' +
+    'TE2,,09:00:00,X1,1\nTE2,09:05:00,09:05:00,X2,2\nTE2,09:10:00,,X3,3\n'
+};
+const resE = C.fromGtfs(feedE);
+const itemsE = {};
+resE.report.items.forEach(i => { itemsE[i.code] = i; });
+eq(resE.data.diagrams[0].trains.find(t => t.number === '401').direction, 'up', 'GTFS E: 北浜→港南の便は駅順の逆向き (上り)');
+eq(resE.data.diagrams[0].trains.find(t => t.number === '402').direction, 'down', 'GTFS E: direction_id が逆でも停車順から下りと判定');
+eq(itemsE['directions-corrected'].count, 1, 'GTFS E: 方向を判定し直した便が報告される');
+deepEq(C.validate(resE.data), [], 'GTFS E: 取り込んだデータは検証を通過 (時刻の逆行なし)');
+const eDeps = C.stationDepartures(resE.data, 0, resE.data.stations.findIndex(s => s.name === '北浜'), 'up');
+deepEq(eDeps.map(d => d.dest), ['港南'], 'GTFS E: 北浜の上り発車の行先は港南');
+// 始発・終着に着発両方の時刻が入っている実フィードの形 (TE1) は、
+// 始発は発のみ・終着は着のみに正規化され、終着駅に「発車」が現れない
+const gTE1 = resE.data.diagrams[0].trains.find(t => t.number === '401');
+deepEq(gTE1.stops[2], { s: 1, arr: null, dep: 480 }, 'GTFS E: 始発は発のみ (着は落とす)');
+deepEq(gTE1.stops[0], { s: 1, arr: 490, dep: null }, 'GTFS E: 終着は着のみ (発は落とす)');
+deepEq(C.stationDepartures(resE.data, 0, 0, 'up'), [], 'GTFS E: 終着駅 (港南) の上り発車は無い');
+
 // ---- GTFS ZIP ----
 const zlib = require('zlib');
 function buildZip(entries) {
