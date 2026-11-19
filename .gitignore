@@ -10,6 +10,8 @@ node_modules/
 venv/
 __pycache__/
 *.pyc
+# build output
+dist/
 # env / secrets
 .env
 .env.local

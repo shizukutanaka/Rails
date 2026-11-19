@@ -1,1 +1,35 @@
-{"description":"日本の時刻表管理ソフト (単一HTML Webアプリ)","name":"rails-timetable","private":true,"scripts":{"test":"node tests/test.js"},"version":"0.1.0"}
+{
+  "name": "rails-timetable",
+  "version": "0.1.0",
+  "description": "日本の時刻表管理ソフト",
+  "private": true,
+  "main": "electron-main.cjs",
+  "scripts": {
+    "test": "node tests/test.js",
+    "start": "electron .",
+    "build": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.3.4",
+    "electron-builder": "26.18.1"
+  },
+  "build": {
+    "appId": "io.github.shizukutanaka.rails",
+    "productName": "Rails",
+    "files": [
+      "electron-main.cjs",
+      "index.html"
+    ],
+    "win": {
+      "target": "portable",
+      "signExecutable": false
+    },
+    "mac": {
+      "target": "zip",
+      "identity": "-"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
