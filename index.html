@@ -195,6 +195,27 @@ var RailsCore = (function () {
     });
   }
 
+  // パターンダイヤ: 列車を intervalMin 分間隔で count 本複製する (列車番号は空欄)。
+  // 時刻が対応範囲 (27:59) を超える複製は作らず、その本数を overflow で返す
+  function repeatTrain(train, intervalMin, count) {
+    var trains = [], overflow = 0;
+    for (var k = 1; k <= count; k++) {
+      var shift = intervalMin * k, fits = true;
+      var stops = train.stops.map(function (st) {
+        function mv(v) {
+          if (v == null) return null;
+          if (v + shift > 1679) fits = false;
+          return v + shift;
+        }
+        return { s: st.s, arr: mv(st.arr), dep: mv(st.dep) };
+      });
+      if (!fits) { overflow++; continue; }
+      trains.push({ number: '', name: train.name, typeIndex: train.typeIndex, direction: train.direction,
+        note: train.note || '', stops: stops });
+    }
+    return { trains: trains, overflow: overflow };
+  }
+
   // 検証: 問題の配列を返す。各要素 {level:'error'|'warning', code, diagram, train, station}
   function validate(data) {
     var issues = [];
@@ -1352,7 +1373,7 @@ var RailsCore = (function () {
     parseTime: parseTime, formatTime: formatTime,
     formatOudTime: formatOudTime, parseOudTime: parseOudTime,
     newStop: newStop, newTrain: newTrain, emptyData: emptyData,
-    travelOrder: travelOrder, destination: destination,
+    travelOrder: travelOrder, destination: destination, repeatTrain: repeatTrain,
     insertStation: insertStation, removeStation: removeStation, moveStation: moveStation,
     validate: validate, stationDepartures: stationDepartures, trainSegments: trainSegments,
     colorToOud: colorToOud, colorFromOud: colorFromOud,
@@ -1411,7 +1432,10 @@ var RailsCore = (function () {
       noIssues: '問題はありません。', issuesFound: '件の問題',
       confirmNew: '現在のデータを破棄して新規データにしますか？', confirmSample: '現在のデータを破棄してサンプルに戻しますか？',
       confirmDelete: '削除しますか？', loadFailed: '読み込みに失敗しました: ',
-      hour: '時'
+      hour: '時',
+      repeatTrain: '列車を繰り返し', repeatEvery: '分間隔で', repeatCount: '本複製', repeatRun: '複製',
+      repeatInvalid: '間隔は 1〜1439 分、本数は 1〜200 本で指定してください',
+      repeatOverflow: '27:59 を超える {0}本は作りませんでした'
     },
     en: {
       appSub: 'Managing your time with timetables', saveJson: 'Save JSON', loadJson: 'Load JSON',
@@ -1451,7 +1475,10 @@ var RailsCore = (function () {
       noIssues: 'No issues found.', issuesFound: ' issue(s)',
       confirmNew: 'Discard current data and start new?', confirmSample: 'Discard current data and restore the sample?',
       confirmDelete: 'Delete?', loadFailed: 'Failed to load: ',
-      hour: ':00'
+      hour: ':00',
+      repeatTrain: 'Repeat train', repeatEvery: 'every (min)', repeatCount: 'times', repeatRun: 'Repeat',
+      repeatInvalid: 'Use an interval of 1-1439 minutes and 1-200 copies',
+      repeatOverflow: '{0} copy(ies) past 27:59 were not created'
     }
   };
   var ISSUE_TEXT = {
@@ -1526,6 +1553,16 @@ var RailsCore = (function () {
   }
 
   // ---------- 編集 ----------
+  function firstTime(train) {
+    var order = C.travelOrder(train, train.stops.length);
+    for (var i = 0; i < order.length; i++) {
+      var st = train.stops[order[i]];
+      if (st.dep != null) return st.dep;
+      if (st.arr != null) return st.arr;
+    }
+    return null;
+  }
+
   function renderEdit() {
     var d = dia();
     var h = '';
@@ -1562,7 +1599,17 @@ var RailsCore = (function () {
     // 列車グリッド
     h += '<div style="flex:3;min-width:320px"><div class="toolbar">' +
       '<button class="small" id="btnAddTrainDown">' + t('addTrainDown') + '</button>' +
-      '<button class="small" id="btnAddTrainUp">' + t('addTrainUp') + '</button></div>';
+      '<button class="small" id="btnAddTrainUp">' + t('addTrainUp') + '</button>';
+    if (d.trains.length) {
+      h += '<label class="lbl">' + t('repeatTrain') + '</label><select id="repTrain">' +
+        d.trains.map(function (train, ti) {
+          return '<option value="' + ti + '">' + (ti + 1) + ' ' + esc(train.number || C.formatTime(firstTime(train))) + '</option>';
+        }).join('') + '</select>' +
+        '<input type="text" class="abbr" id="repInterval" value="10" inputmode="numeric"><label class="lbl">' + t('repeatEvery') + '</label>' +
+        '<input type="text" class="abbr" id="repCount" value="5" inputmode="numeric"><label class="lbl">' + t('repeatCount') + '</label>' +
+        '<button class="small" id="btnRepeat">' + t('repeatRun') + '</button>';
+    }
+    h += '</div>';
     h += '<div class="scroll-x"><table><thead><tr><th class="station">' + t('station') + '</th>';
     d.trains.forEach(function (train, ti) {
       var ty = data.types[train.typeIndex] || {};
@@ -1671,6 +1718,18 @@ var RailsCore = (function () {
     }
     document.getElementById('btnAddTrainDown').addEventListener('click', function () { addTrain('down'); });
     document.getElementById('btnAddTrainUp').addEventListener('click', function () { addTrain('up'); });
+    var btnRepeat = document.getElementById('btnRepeat');
+    if (btnRepeat) btnRepeat.addEventListener('click', function () {
+      var ti = +document.getElementById('repTrain').value;
+      var interval = +document.getElementById('repInterval').value.trim();
+      var count = +document.getElementById('repCount').value.trim();
+      if (!(interval >= 1 && interval <= 1439 && count >= 1 && count <= 200) ||
+          Math.floor(interval) !== interval || Math.floor(count) !== count) { alert(t('repeatInvalid')); return; }
+      var res = C.repeatTrain(d.trains[ti], interval, count);
+      Array.prototype.splice.apply(d.trains, [ti + 1, 0].concat(res.trains));
+      save(); render();
+      if (res.overflow) alert(t('repeatOverflow').replace('{0}', res.overflow));
+    });
     main.querySelectorAll('.tr-number').forEach(function (el) {
       el.addEventListener('change', function () { d.trains[+el.dataset.t].number = el.value; save(); });
     });

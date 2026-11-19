@@ -530,5 +530,27 @@ eq(lossyItems['pass-arrival-dropped'].count, 1, 'GTFS書出(損失): 通過駅�
 eq(expLossy.report.trainCount, 3, 'GTFS書出(損失): 書き出された列車数');
 eq(expLossy.report.diagramCount, 3, 'GTFS書出(損失): 書き出されたダイヤ数');
 
+// ---- パターンダイヤ (列車の繰り返し複製) ----
+{
+  const base = C.newTrain(3);
+  base.number = '101'; base.name = 'はやて'; base.typeIndex = 1; base.direction = 'up';
+  base.stops = [{ s: STOP.STOP, arr: 545, dep: null }, { s: STOP.PASS, arr: null, dep: 540 }, { s: STOP.STOP, arr: null, dep: 530 }];
+  const rep = C.repeatTrain(base, 15, 3);
+  eq(rep.trains.length, 3, 'repeatTrain: 3本作る');
+  eq(rep.overflow, 0, 'repeatTrain: 範囲内なら overflow 0');
+  deepEq(rep.trains.map(tr => tr.stops[2].dep), [545, 560, 575], 'repeatTrain: 15分ずつずれる');
+  deepEq(rep.trains[2].stops, [{ s: STOP.STOP, arr: 590, dep: null }, { s: STOP.PASS, arr: null, dep: 585 }, { s: STOP.STOP, arr: null, dep: 575 }], 'repeatTrain: 状態と空欄を保つ');
+  eq(rep.trains[0].number, '', 'repeatTrain: 列車番号は空欄');
+  deepEq([rep.trains[0].name, rep.trains[0].typeIndex, rep.trains[0].direction], ['はやて', 1, 'up'], 'repeatTrain: 名前・種別・方向を引き継ぐ');
+  eq(base.stops[2].dep, 530, 'repeatTrain: 元の列車は変えない');
+  const late = C.repeatTrain(base, 600, 3);
+  eq(late.trains.length, 1, 'repeatTrain: 27:59 を超える複製は作らない');
+  eq(late.overflow, 2, 'repeatTrain: 作らなかった本数を返す');
+  deepEq(C.validate({ stations: [{ name: 'A' }, { name: 'B' }, { name: 'C' }], types: [{ name: '普通' }, { name: '快速' }],
+    diagrams: [{ name: '平日', trains: [base].concat(rep.trains) }] }), [], 'repeatTrain: 複製は検証で新しい警告を出さない');
+  rep.trains[0].stops[0].arr = 0;
+  eq(rep.trains[1].stops[0].arr, 575, 'repeatTrain: 複製どうしは stops を共有しない');
+}
+
 console.log(passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
