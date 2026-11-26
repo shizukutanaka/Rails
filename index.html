@@ -54,6 +54,8 @@
   .tt-sym { color:#5a6572; }
   #diagramWrap { overflow:auto; border:1px solid var(--border); border-radius:8px; background:#fff; }
   .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  .storage-warn { margin:8px 14px 0; padding:7px 10px; border:1px solid var(--warn); border-left-width:4px; border-radius:6px; background:#fdf8ec; color:#6a4a08; font-size:13px; }
+  .storage-warn[hidden] { display:none; }
   label.lbl { font-size:13px; color:#39424e; }
   @media (max-width: 640px) {
     main { margin:0 6px 8px; padding:8px; }
@@ -78,6 +80,7 @@
   <input type="file" id="fileOud" accept=".oud,.oud2,.txt" hidden>
   <input type="file" id="fileGtfs" accept=".zip,application/zip" hidden>
 </header>
+<div id="storageWarn" class="storage-warn" role="alert" hidden></div>
 <nav class="tabs" id="tabs">
   <button data-view="edit" class="active" data-i18n="viewEdit">編集</button>
   <button data-view="train" data-i18n="viewTrain">列車時刻表</button>
@@ -1432,6 +1435,8 @@ var RailsCore = (function () {
       noIssues: '問題はありません。', issuesFound: '件の問題',
       confirmNew: '現在のデータを破棄して新規データにしますか？', confirmSample: '現在のデータを破棄してサンプルに戻しますか？',
       confirmDelete: '削除しますか？', loadFailed: '読み込みに失敗しました: ',
+      storageSaveFailed: '保存できませんでした。編集内容はまだ保存されていません。',
+      storageLoadFailed: '保存データを読み込めなかったため、サンプルデータを表示しています。',
       hour: '時',
       repeatTrain: '列車を繰り返し', repeatEvery: '分間隔で', repeatCount: '本複製', repeatRun: '複製',
       repeatInvalid: '間隔は 1〜1439 分、本数は 1〜200 本で指定してください',
@@ -1475,6 +1480,8 @@ var RailsCore = (function () {
       noIssues: 'No issues found.', issuesFound: ' issue(s)',
       confirmNew: 'Discard current data and start new?', confirmSample: 'Discard current data and restore the sample?',
       confirmDelete: 'Delete?', loadFailed: 'Failed to load: ',
+      storageSaveFailed: 'Could not save. Your edits have not been saved yet.',
+      storageLoadFailed: 'Saved data could not be loaded, so sample data is shown.',
       hour: ':00',
       repeatTrain: 'Repeat train', repeatEvery: 'every (min)', repeatCount: 'times', repeatRun: 'Repeat',
       repeatInvalid: 'Use an interval of 1-1439 minutes and 1-200 copies',
@@ -1502,13 +1509,21 @@ var RailsCore = (function () {
     }
   };
 
-  var lang = localStorage.getItem(LS_KEY + '.lang') || 'ja';
+  var lang = 'ja';
+  try { lang = localStorage.getItem(LS_KEY + '.lang') || 'ja'; } catch (e) {}
   var data, curDia = 0, view = 'edit';
   var selTrain = 0, selStation = 0, selDirection = 'down';
-  try {
-    var saved = localStorage.getItem(LS_KEY);
-    data = saved ? C.importJSON(saved) : C.sampleData();
-  } catch (e) { data = C.sampleData(); }
+  var storageWarningKey = null;
+  var saved = null, loadFailed = false;
+  try { saved = localStorage.getItem(LS_KEY); } catch (e) { loadFailed = true; }
+  if (saved) {
+    try { data = C.importJSON(saved); } catch (e) {
+      loadFailed = true;
+      try { localStorage.setItem(LS_KEY + '.backup', saved); } catch (e2) {}
+    }
+  }
+  if (!data) data = C.sampleData();
+  if (loadFailed) storageWarningKey = 'storageLoadFailed';
 
   function t(k) { return (I18N[lang] && I18N[lang][k]) || I18N.ja[k] || k; }
   function esc(s) {
@@ -1516,7 +1531,27 @@ var RailsCore = (function () {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
-  function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch (e) {} }
+  function updateStorageWarning() {
+    var el = document.getElementById('storageWarn');
+    if (!storageWarningKey) {
+      el.hidden = true;
+      el.textContent = '';
+    } else {
+      el.textContent = t(storageWarningKey);
+      el.hidden = false;
+    }
+  }
+  function save() {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
+      if (storageWarningKey) { storageWarningKey = null; updateStorageWarning(); }
+    } catch (e) {
+      if (storageWarningKey !== 'storageSaveFailed') {
+        storageWarningKey = 'storageSaveFailed';
+        updateStorageWarning();
+      }
+    }
+  }
   function dia() { return data.diagrams[curDia] || data.diagrams[0]; }
 
   var main = document.getElementById('main');
@@ -1527,6 +1562,7 @@ var RailsCore = (function () {
       el.textContent = t(el.getAttribute('data-i18n'));
     });
     document.getElementById('btnLang').textContent = lang === 'ja' ? 'EN' : '日本語';
+    updateStorageWarning();
     var issues = C.validate(data);
     var checkBtn = document.querySelector('#tabs button[data-view="check"]');
     checkBtn.innerHTML = esc(t('viewCheck')) + (issues.length ? '<span class="badge">' + issues.length + '</span>' : '');
